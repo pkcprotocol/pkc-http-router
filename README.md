@@ -49,7 +49,7 @@ Logging is **off by default**.
 
 #### getting started
 
-The project is written in TypeScript and requires **Node.js 22 or newer** (it uses the built-in `node:sqlite` module). `npm start` compiles the TypeScript to `dist/` (via the `prestart` build step) and then runs the compiled server.
+The project is written in TypeScript and requires **Node.js 24 or newer** (it uses the built-in `node:sqlite` module, which is stable as of Node 24). `npm start` compiles the TypeScript to `dist/` (via the `prestart` build step) and then runs the compiled server.
 
 ```
 git clone https://github.com/pkcprotocol/pkc-http-router.git && cd pkc-http-router
