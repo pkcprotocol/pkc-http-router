@@ -11,7 +11,7 @@ import prometheusRouter from './routes/prometheus.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 import cors from 'cors'
 import Debug from 'debug'
-const debug = Debug('ipfs-tracker:server')
+const debug = Debug('pkc-http-router:server')
 const logKey = process.argv.includes('--log-key') && process.argv[process.argv.indexOf('--log-key') + 1]
 
 const app = express()

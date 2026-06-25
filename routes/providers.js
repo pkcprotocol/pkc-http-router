@@ -3,7 +3,7 @@ import {cleanAddrs, logPostProviders} from '../lib/utils.js'
 import express from 'express'
 const router = express.Router()
 import Debug from 'debug'
-const debug = Debug('ipfs-tracker:routes:providers')
+const debug = Debug('pkc-http-router:routes:providers')
 import prometheus from '../lib/prometheus.js'
 
 router.put('/', async (req, res, next) => {

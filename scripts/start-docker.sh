@@ -12,6 +12,6 @@ docker run \
   --log-opt max-size=10m \
   --log-opt max-file=5 \
   --publish 80:80 \
-  node:18 sh -c "npm ci && NO_IP_VALIDATE=1 DEBUG=ipfs-tracker:* PORT=80 npm start -- --log-key $LOG_KEY"
+  node:18 sh -c "npm ci && NO_IP_VALIDATE=1 DEBUG=pkc-http-router:* PORT=80 npm start -- --log-key $LOG_KEY"
 
 docker logs --follow ipfs-tracker

@@ -18,8 +18,8 @@ if [ -z "${DEPLOY_PASSWORD+xxx}" ]; then echo "DEPLOY_PASSWORD not set" && exit;
 
 SCRIPT="
 cd /home
-git clone https://github.com/plebbit/ipfs-tracker.git
-cd ipfs-tracker
+git clone https://github.com/pkcprotocol/pkc-http-router.git
+cd pkc-http-router
 git reset HEAD --hard
 git pull
 "
@@ -34,11 +34,11 @@ FILE_NAMES=(
 
 # copy files
 for FILE_NAME in ${FILE_NAMES[@]}; do
-  sshpass -p "$DEPLOY_PASSWORD" scp $FILE_NAME "$DEPLOY_USER"@"$DEPLOY_HOST":/home/ipfs-tracker
+  sshpass -p "$DEPLOY_PASSWORD" scp $FILE_NAME "$DEPLOY_USER"@"$DEPLOY_HOST":/home/pkc-http-router
 done
 
 SCRIPT="
-cd /home/ipfs-tracker
+cd /home/pkc-http-router
 LOG_KEY=$LOG_KEY scripts/start-docker.sh
 "
 
