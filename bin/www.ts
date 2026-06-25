@@ -4,10 +4,12 @@
  * Module dependencies.
  */
 
-import app from '../app.js'
-import http from 'http'
+import http from 'node:http'
+import type {AddressInfo} from 'node:net'
 import Debug from 'debug'
-const debug = Debug('ipfs-tracker:server')
+import app from '../app.js'
+
+const debug = Debug('pkc-http-router:server')
 
 /**
  * Get port from environment and store in Express.
@@ -34,7 +36,7 @@ server.on('listening', onListening)
  * Normalize a port into a number, string, or false.
  */
 
-function normalizePort(val) {
+function normalizePort(val: string): number | string | false {
   const port = parseInt(val, 10)
 
   if (isNaN(port)) {
@@ -54,7 +56,7 @@ function normalizePort(val) {
  * Event listener for HTTP server "error" event.
  */
 
-function onError(error) {
+function onError(error: NodeJS.ErrnoException): void {
   if (error.syscall !== 'listen') {
     throw error
   }
@@ -82,10 +84,10 @@ function onError(error) {
  * Event listener for HTTP server "listening" event.
  */
 
-function onListening() {
-  const addr = server.address()
+function onListening(): void {
+  const addr = server.address() as AddressInfo | string | null
   const bind = typeof addr === 'string'
     ? 'pipe ' + addr
-    : 'port ' + addr.port
+    : 'port ' + addr?.port
   debug('Listening on ' + bind)
 }

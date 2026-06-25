@@ -1,6 +1,7 @@
+import promClient from 'prom-client'
+
 const prefix = 'ipfs_tracker_'
 
-import promClient from 'prom-client'
 promClient.collectDefaultMetrics({prefix})
 
 const up = new promClient.Gauge({
@@ -10,7 +11,7 @@ const up = new promClient.Gauge({
 })
 up.set(1)
 
-const counterLabelNames = []
+const counterLabelNames: string[] = []
 const counters = {
   getProvidersRequestCount: new promClient.Counter({
     name: `${prefix}get_providers_request_count`,
@@ -45,24 +46,24 @@ const counters = {
 }
 
 const labels = {}
-const getProviders = () => {
+const getProviders = (): void => {
   counters.getProvidersRequestCount.inc(labels, 1)
 }
-const getProvidersSuccess = () => {
+const getProvidersSuccess = (): void => {
   counters.getProvidersRequestSuccessCount.inc(labels, 1)
 }
-const getProvidersProviders = (providers) => {
+const getProvidersProviders = (providers?: {length?: number}): void => {
   if (typeof providers?.length === 'number') {
     counters.getProvidersProviderCount.inc(labels, providers.length)
   }
 }
-const postProviders = () => {
+const postProviders = (): void => {
   counters.postProvidersRequestCount.inc(labels, 1)
 }
-const postProvidersSuccess = () => {
+const postProvidersSuccess = (): void => {
   counters.postProvidersRequestSuccessCount.inc(labels, 1)
 }
-const postProvidersProviders = (providers) => {
+const postProvidersProviders = (providers?: {length?: number}): void => {
   if (typeof providers?.length === 'number') {
     counters.postProvidersProviderCount.inc(labels, providers.length)
   }

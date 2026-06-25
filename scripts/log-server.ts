@@ -1,5 +1,5 @@
 import http from 'node:http'
-import { inspect } from 'node:util'
+import {inspect} from 'node:util'
 inspect.defaultOptions.depth = null
 
 const hostname = '127.0.0.1'
@@ -9,11 +9,13 @@ const server = http.createServer((req, res) => {
   let reqBody = ''
   req.on('data', chunk => {reqBody += chunk})
   req.on('end', () => {
+    let body: unknown = reqBody
     try {
-      reqBody = JSON.parse(reqBody)
+      body = JSON.parse(reqBody)
     }
-    catch (e) {}
-    console.log({method: req.method, url: req.url, headers: req.headers, body: reqBody})
+    catch {}
+    console.log({method: req.method, url: req.url, headers: req.headers, body})
+    res.end()
   })
 })
 

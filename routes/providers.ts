@@ -1,12 +1,18 @@
+import express, {type Request, type Response} from 'express'
+import Debug from 'debug'
 import database from '../lib/database.js'
 import {cleanAddrs, logPostProviders} from '../lib/utils.js'
-import express from 'express'
-const router = express.Router()
-import Debug from 'debug'
-const debug = Debug('pkc-http-router:routes:providers')
 import prometheus from '../lib/prometheus.js'
+import type {Provider} from '../lib/types.js'
 
-router.put('/', async (req, res, next) => {
+const router = express.Router()
+const debug = Debug('pkc-http-router:routes:providers')
+
+interface PutProvidersBody {
+  Providers: Provider[]
+}
+
+router.put('/', async (req: Request, res: Response) => {
   prometheus.postProviders()
   logPostProviders(req)
 
@@ -17,10 +23,13 @@ router.put('/', async (req, res, next) => {
     Rutracker: Frequently employs announce intervals of 1800 seconds, and minimum intervals of around 300-600 seconds.
   */
 
+  const body = req.body as PutProvidersBody
+  const reqIp = req.ip ?? ''
+
   // validate ip before adding to db
-  const providers = []
-  for (const provider of req.body.Providers) {
-    provider.Payload.Addrs = cleanAddrs(provider.Payload.Addrs, req.ip)
+  const providers: Provider[] = []
+  for (const provider of body.Providers) {
+    provider.Payload.Addrs = cleanAddrs(provider.Payload.Addrs, reqIp)
     if (provider.Payload.Addrs.length) {
       providers.push(provider)
     }
@@ -34,12 +43,12 @@ router.put('/', async (req, res, next) => {
 
   await database.addProviders(providers)
 
-  const resBody = {ProvideResults: []}
-  for (const Provider of req.body.Providers) {
+  const resBody = {ProvideResults: [] as {Schema: string; Protocol: string; AdvisoryTTL?: number}[]}
+  for (const provider of body.Providers) {
     resBody.ProvideResults.push({
-      Schema: Provider.Schema,
-      Protocol: Provider.Protocol,
-      AdvisoryTTL: Provider.Payload.AdvisoryTTL
+      Schema: provider.Schema,
+      Protocol: provider.Protocol,
+      AdvisoryTTL: provider.Payload.AdvisoryTTL
     })
   }
 
@@ -49,16 +58,16 @@ router.put('/', async (req, res, next) => {
   prometheus.postProvidersSuccess()
 })
 
-router.get('/:cid', async (req, res, next) => {
+router.get('/:cid', async (req: Request, res: Response) => {
   prometheus.getProviders()
 
-  const {providers, lastModified} = await database.getProviders(req.params.cid)
+  const {providers, lastModified} = await database.getProviders(String(req.params.cid))
 
   prometheus.getProvidersProviders(providers)
 
-  const resBody = JSON.stringify({Providers: providers.length ? providers: null})
+  const resBody = JSON.stringify({Providers: providers.length ? providers : null})
   let resStatus = 200
-  const resHeaders = {
+  const resHeaders: Record<string, string | number> = {
     // TODO: add support for application/x-ndjson (streaming)
     'Content-Type': 'application/json',
     'Vary': 'Accept',
@@ -81,7 +90,7 @@ router.get('/:cid', async (req, res, next) => {
     resHeaders['Last-Modified'] = new Date(lastModified).toUTCString()
   }
 
-  // use res.writeHead() instead of res.set() to force remove content-type charset=utf-8 
+  // use res.writeHead() instead of res.set() to force remove content-type charset=utf-8
   res.writeHead(resStatus, resHeaders)
   res.end(resBody)
 
