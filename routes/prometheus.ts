@@ -6,7 +6,7 @@ const router = express.Router()
 router.get('/', async (req: Request, res: Response) => {
   const metricsResponse = await prometheus.promClient.register.metrics()
   res.writeHead(200, {'Content-Type': 'text/plain; charset=utf-8'})
-  res.write(metricsResponse)
+  res.end(metricsResponse)
 })
 
 export default router
