@@ -14,6 +14,9 @@ const databasePath = path.join(databaseFolderPath, 'database.sqlite')
 // TODO: once POST providers specs is finalized, use a shorter time like 30min, more similar to torren trackers
 const ttl = 1000 * 60 * 60 * 24
 
+// how often the background sweep physically deletes fully expired cid rows
+const sweepInterval = 1000 * 60 * 60
+
 // minimal key/value store backed by the built-in node:sqlite module (no native deps).
 // values are JSON serialized, keyed by normalized cid string.
 class ProvidersStore {
@@ -21,6 +24,7 @@ class ProvidersStore {
   #getStatement: StatementSync
   #setStatement: StatementSync
   #clearStatement: StatementSync
+  #sweepStatement: StatementSync
 
   constructor(location: string) {
     this.#db = new DatabaseSync(location)
@@ -28,6 +32,9 @@ class ProvidersStore {
     this.#getStatement = this.#db.prepare('SELECT value FROM providers WHERE key = ?')
     this.#setStatement = this.#db.prepare('INSERT INTO providers (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
     this.#clearStatement = this.#db.prepare('DELETE FROM providers')
+    // a row's lastModified is bumped to Date.now() on every write, so a stale row-level
+    // lastModified means every provider in it is also expired, safe to delete the whole row
+    this.#sweepStatement = this.#db.prepare("DELETE FROM providers WHERE CAST(json_extract(value, '$.lastModified') AS INTEGER) < ?")
   }
 
   get(key: string): CidProviders | undefined {
@@ -42,6 +49,13 @@ class ProvidersStore {
   clear(): void {
     this.#clearStatement.run()
   }
+
+  // physically delete cid rows whose providers are all expired, so rows for cids that
+  // are never re-announced don't accumulate forever (read/write paths only filter/clean
+  // the cid currently being touched)
+  sweep(): void {
+    this.#sweepStatement.run(Date.now() - ttl)
+  }
 }
 
 let providersStore: ProvidersStore | undefined
@@ -52,6 +66,11 @@ const initDatabase = async (): Promise<void> => {
   }
   fs.mkdirSync(databaseFolderPath, {recursive: true})
   providersStore = new ProvidersStore(databasePath)
+
+  // sweep stale rows on startup, then periodically; unref so it never keeps the process alive
+  providersStore.sweep()
+  const sweepTimer = setInterval(() => providersStore?.sweep(), sweepInterval)
+  sweepTimer.unref()
 }
 
 const addProviders = async (providers: Provider[]): Promise<void> => {
@@ -168,7 +187,8 @@ const database = {
   // private
   _private: {
     addCidProvidersToDatabase,
-    providersKeyv: () => providersStore
+    providersKeyv: () => providersStore,
+    sweep: () => providersStore?.sweep()
   }
 }
 

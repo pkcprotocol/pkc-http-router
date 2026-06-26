@@ -72,6 +72,34 @@ describe('database', () => {
     })
   })
 
+  describe('sweep', () => {
+    it('sweep should physically delete rows whose providers are all expired', async () => {
+      await database._private.addCidProvidersToDatabase(cid, makeProvider('1'))
+      // row exists before sweeping
+      expect(database._private.providersKeyv()!.get(cid)).not.toBe(undefined)
+
+      // mock date 10 years in the future so the whole row is past the ttl
+      const in10Years = Date.now() + 1000 * 60 * 60 * 24 * 365 * 10
+      Date.now = () => in10Years
+
+      database._private.sweep()
+
+      // row is physically gone, not just filtered out on read
+      expect(database._private.providersKeyv()!.get(cid)).toBe(undefined)
+
+      // restore mock
+      Date.now = DateNow
+    })
+
+    it('sweep should keep rows that are still within the ttl', async () => {
+      await database._private.addCidProvidersToDatabase(cid, makeProvider('1'))
+
+      database._private.sweep()
+
+      expect(database._private.providersKeyv()!.get(cid)).not.toBe(undefined)
+    })
+  })
+
   describe('getProviders', () => {
     describe('large amount of providers in db', () => {
       let res: Awaited<ReturnType<typeof database.getProviders>>
