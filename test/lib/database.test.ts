@@ -82,7 +82,7 @@ describe('database', () => {
       const in10Years = Date.now() + 1000 * 60 * 60 * 24 * 365 * 10
       Date.now = () => in10Years
 
-      database._private.sweep()
+      await database._private.sweep()
 
       // row is physically gone, not just filtered out on read
       expect(database._private.providersKeyv()!.get(cid)).toBe(undefined)
@@ -94,7 +94,7 @@ describe('database', () => {
     it('sweep should keep rows that are still within the ttl', async () => {
       await database._private.addCidProvidersToDatabase(cid, makeProvider('1'))
 
-      database._private.sweep()
+      await database._private.sweep()
 
       expect(database._private.providersKeyv()!.get(cid)).not.toBe(undefined)
     })

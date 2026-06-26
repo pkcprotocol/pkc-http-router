@@ -17,6 +17,11 @@ const ttl = 1000 * 60 * 60 * 24
 // how often the background sweep physically deletes fully expired cid rows
 const sweepInterval = 1000 * 60 * 60
 
+// the sweep deletes expired rows in bounded batches, yielding to the event loop between
+// each one, so a single delete transaction never holds the write lock (or blocks the
+// synchronous event loop) for long no matter how many rows have expired
+const sweepBatchSize = 1000
+
 // minimal key/value store backed by the built-in node:sqlite module (no native deps).
 // values are JSON serialized, keyed by normalized cid string.
 class ProvidersStore {
@@ -36,13 +41,29 @@ class ProvidersStore {
     this.#db.exec('PRAGMA journal_mode = WAL')
     // NORMAL is durable under WAL (only loses a transaction on OS/power crash, not on app crash) and much faster.
     this.#db.exec('PRAGMA synchronous = NORMAL')
-    this.#db.exec('CREATE TABLE IF NOT EXISTS providers (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT')
+    // lastModified is a real indexed column (mirrored from the JSON value on every write) so the
+    // sweep is an indexed range delete instead of a full-table json_extract scan of every row
+    this.#db.exec('CREATE TABLE IF NOT EXISTS providers (key TEXT PRIMARY KEY, value TEXT NOT NULL, lastModified INTEGER NOT NULL) STRICT')
+    this.#migrateLastModifiedColumn()
+    this.#db.exec('CREATE INDEX IF NOT EXISTS providers_lastModified ON providers (lastModified)')
     this.#getStatement = this.#db.prepare('SELECT value FROM providers WHERE key = ?')
-    this.#setStatement = this.#db.prepare('INSERT INTO providers (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    this.#setStatement = this.#db.prepare('INSERT INTO providers (key, value, lastModified) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, lastModified = excluded.lastModified')
     this.#clearStatement = this.#db.prepare('DELETE FROM providers')
     // a row's lastModified is bumped to Date.now() on every write, so a stale row-level
-    // lastModified means every provider in it is also expired, safe to delete the whole row
-    this.#sweepStatement = this.#db.prepare("DELETE FROM providers WHERE CAST(json_extract(value, '$.lastModified') AS INTEGER) < ?")
+    // lastModified means every provider in it is also expired, safe to delete the whole row.
+    // delete by primary key from an indexed, bounded subquery so each batch is a quick keyed delete.
+    this.#sweepStatement = this.#db.prepare('DELETE FROM providers WHERE key IN (SELECT key FROM providers WHERE lastModified < ? LIMIT ?)')
+  }
+
+  // existing databases were created before lastModified was a column; add it and backfill from the
+  // JSON value once, so old production stores upgrade in place (the index then covers all rows)
+  #migrateLastModifiedColumn(): void {
+    const columns = this.#db.prepare('PRAGMA table_info(providers)').all() as {name: string}[]
+    if (columns.some(column => column.name === 'lastModified')) {
+      return
+    }
+    this.#db.exec('ALTER TABLE providers ADD COLUMN lastModified INTEGER NOT NULL DEFAULT 0')
+    this.#db.exec("UPDATE providers SET lastModified = CAST(json_extract(value, '$.lastModified') AS INTEGER)")
   }
 
   get(key: string): CidProviders | undefined {
@@ -51,7 +72,7 @@ class ProvidersStore {
   }
 
   set(key: string, value: CidProviders): void {
-    this.#setStatement.run(key, JSON.stringify(value))
+    this.#setStatement.run(key, JSON.stringify(value), value.lastModified)
   }
 
   clear(): void {
@@ -60,9 +81,18 @@ class ProvidersStore {
 
   // physically delete cid rows whose providers are all expired, so rows for cids that
   // are never re-announced don't accumulate forever (read/write paths only filter/clean
-  // the cid currently being touched)
-  sweep(): void {
-    this.#sweepStatement.run(Date.now() - ttl)
+  // the cid currently being touched). deletes in bounded batches, yielding between each,
+  // so the write lock / synchronous event-loop block stays short regardless of table size.
+  async sweep(): Promise<void> {
+    const expiryDate = Date.now() - ttl
+    let deleted: number
+    do {
+      deleted = Number(this.#sweepStatement.run(expiryDate, sweepBatchSize).changes)
+      // yield so GET lookups / PUT writes can run between batches
+      if (deleted === sweepBatchSize) {
+        await new Promise(resolve => setImmediate(resolve))
+      }
+    } while (deleted === sweepBatchSize)
   }
 }
 
@@ -76,8 +106,8 @@ const initDatabase = async (): Promise<void> => {
   providersStore = new ProvidersStore(databasePath)
 
   // sweep stale rows on startup, then periodically; unref so it never keeps the process alive
-  providersStore.sweep()
-  const sweepTimer = setInterval(() => providersStore?.sweep(), sweepInterval)
+  providersStore.sweep().catch(error => debug('startup sweep failed', error))
+  const sweepTimer = setInterval(() => providersStore?.sweep().catch(error => debug('sweep failed', error)), sweepInterval)
   sweepTimer.unref()
 }
 
