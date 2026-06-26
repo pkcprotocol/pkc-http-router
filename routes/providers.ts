@@ -41,7 +41,16 @@ router.put('/', async (req: Request, res: Response) => {
     debug('no providers with valid addresses')
   }
 
-  await database.addProviders(providers)
+  try {
+    await database.addProviders(providers)
+  } catch (e) {
+    // without this, a thrown write (e.g. "database is locked") leaves the request hanging with no
+    // response, so the client sees a network timeout and silently drops the announcement. return a
+    // real 503 so the client can retry instead.
+    debug('failed to add providers', e)
+    res.status(503).set('Content-Type', 'application/json').send({Error: (e as Error).message})
+    return
+  }
 
   const resBody = {ProvideResults: [] as {Schema: string; Protocol: string; AdvisoryTTL?: number}[]}
   for (const provider of body.Providers) {

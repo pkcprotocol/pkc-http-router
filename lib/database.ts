@@ -28,6 +28,14 @@ class ProvidersStore {
 
   constructor(location: string) {
     this.#db = new DatabaseSync(location)
+    // busy_timeout: wait up to 5s for the lock instead of throwing "database is locked" immediately.
+    // node:sqlite is synchronous so our own writes are already serialized; the lock contention comes
+    // from any *other* process opening the file (sqlite3 cli, backups, a second container on the volume).
+    this.#db.exec('PRAGMA busy_timeout = 5000')
+    // WAL: readers don't block the writer (and vice versa), so GET lookups keep serving during writes.
+    this.#db.exec('PRAGMA journal_mode = WAL')
+    // NORMAL is durable under WAL (only loses a transaction on OS/power crash, not on app crash) and much faster.
+    this.#db.exec('PRAGMA synchronous = NORMAL')
     this.#db.exec('CREATE TABLE IF NOT EXISTS providers (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT')
     this.#getStatement = this.#db.prepare('SELECT value FROM providers WHERE key = ?')
     this.#setStatement = this.#db.prepare('INSERT INTO providers (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
