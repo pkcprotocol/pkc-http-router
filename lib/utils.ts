@@ -88,12 +88,13 @@ export const cleanAddrs = (addrs: string[], reqIp: string): string[] => {
     reqIp = reqIp.replace('::ffff:', '')
   }
 
-  // fix the ip 0.0.0.0 kubo problem
+  // fix the ip 0.0.0.0 kubo problem: only rewrite the unspecified ip component itself,
+  // a bare replace of '::' would corrupt legit compressed ipv6 addrs like /ip6/2a01:4f8::2
   if (net.isIP(reqIp) === 4) {
-    addrs = addrs.filter(addr => !addr.startsWith('/ip6/::')).map(addr => addr.replace('0.0.0.0', reqIp))
+    addrs = addrs.filter(addr => !addr.startsWith('/ip6/::')).map(addr => addr.replace(/^\/ip4\/0\.0\.0\.0(\/|$)/, `/ip4/${reqIp}$1`))
   }
   else if (net.isIP(reqIp) === 6) {
-    addrs = addrs.filter(addr => !addr.startsWith('/ip4/0.0.0.0')).map(addr => addr.replace('::', reqIp))
+    addrs = addrs.filter(addr => !addr.startsWith('/ip4/0.0.0.0')).map(addr => addr.replace(/^\/ip6\/::(\/|$)/, `/ip6/${reqIp}$1`))
   }
 
   // useful for testing

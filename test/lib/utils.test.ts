@@ -75,5 +75,20 @@ describe('utils', () => {
       const cleaned = cleanAddrs([`/ip4/0.0.0.0/tcp/4001`], reqIp)
       expect(cleaned).toEqual([`/ip4/${reqIp}/tcp/4001`])
     })
+
+    it('rewrites kubo unspecified :: to the request ip', () => {
+      const reqIp6 = '2606:4700:4700::1111'
+      const cleaned = cleanAddrs(['/ip6/::/tcp/4001'], reqIp6)
+      expect(cleaned).toEqual([`/ip6/${reqIp6}/tcp/4001`])
+    })
+
+    // the old code replaced the first '::' anywhere in the addr, corrupting legit compressed
+    // ipv6 addrs (e.g. /ip6/2606:4700:4700::1111 -> /ip6/2606:4700:47002606:...) before they
+    // were stored, so ipv6 announcers ended up with garbage addresses in the database
+    it('does not corrupt compressed ipv6 addrs containing ::', () => {
+      const reqIp6 = '2606:4700:4700::1111'
+      const cleaned = cleanAddrs([`/ip6/${reqIp6}/tcp/4001`], reqIp6)
+      expect(cleaned).toEqual([`/ip6/${reqIp6}/tcp/4001`])
+    })
   })
 })
