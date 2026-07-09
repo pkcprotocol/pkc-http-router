@@ -4,10 +4,10 @@
  * Module dependencies.
  */
 
-import http from 'node:http'
 import type {AddressInfo} from 'node:net'
 import Debug from 'debug'
 import app from '../app.js'
+import createServer from '../lib/server.js'
 
 const debug = Debug('pkc-http-router:server')
 
@@ -22,7 +22,7 @@ app.set('port', port)
  * Create HTTP server.
  */
 
-const server = http.createServer(app)
+const server = createServer(app)
 
 /**
  * Listen on provided port, on all network interfaces.
