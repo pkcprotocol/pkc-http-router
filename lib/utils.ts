@@ -25,7 +25,11 @@ export const logPostProviders = (req: Request): void => {
     const addressCount = provider?.Payload?.Addrs?.length
     for (const key of provider?.Payload?.Keys || []) {
       const cid = key
-      const cidV1 = normalizeCid(cid)
+      // logging runs before request validation, a bad key must not throw a 500 here
+      let cidV1 = 'invalid'
+      try {
+        cidV1 = normalizeCid(cid)
+      } catch {}
       const log = `${timestamp} ${ip} ${peerId} ${addressCount} ${cid} ${cidV1}\n`
       fs.appendFileSync(logPath, log, 'utf8')
     }

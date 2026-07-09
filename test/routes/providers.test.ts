@@ -236,4 +236,36 @@ describe('routes providers', () => {
       expect(rawCodecCidRes.body.Providers[0].Addrs).toEqual(dagPbBody.Providers[0].Payload.Addrs)
     })
   })
+
+  // malformed input used to throw unhandled and return express's default 500 page with a
+  // stack trace; it is the client's error and must be a 400 json response
+  describe('invalid input', () => {
+    afterAll(() => {
+      database.clear()
+    })
+
+    it('GET with a non-cid path returns 400', async () => {
+      const res = await request('GET', '/routing/v1/providers/favicon.ico', {headers})
+      expect(res.status).toBe(400)
+      expect(res.body.Error).toContain('invalid cid')
+    })
+
+    it('PUT without a Providers array returns 400', async () => {
+      const res = await request('PUT', '/routing/v1/providers/', {headers, body: {}})
+      expect(res.status).toBe(400)
+      expect(res.body.Error).toContain('invalid body')
+    })
+
+    it('PUT with a provider missing its Payload returns 400', async () => {
+      const res = await request('PUT', '/routing/v1/providers/', {headers, body: {Providers: [{Schema: 'bitswap'}]}})
+      expect(res.status).toBe(400)
+    })
+
+    it('PUT with an unparseable key returns 400', async () => {
+      const badBody = JSON.parse(JSON.stringify(body))
+      badBody.Providers[0].Payload.Keys = ['not-a-cid']
+      const res = await request('PUT', '/routing/v1/providers/', {headers, body: badBody})
+      expect(res.status).toBe(400)
+    })
+  })
 })

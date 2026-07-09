@@ -1,7 +1,7 @@
 import express, {type Request, type Response} from 'express'
 import Debug from 'debug'
 import database from '../lib/database.js'
-import {cleanAddrs, logPostProviders} from '../lib/utils.js'
+import {cleanAddrs, logPostProviders, normalizeCid} from '../lib/utils.js'
 import prometheus from '../lib/prometheus.js'
 import type {Provider} from '../lib/types.js'
 
@@ -26,13 +26,29 @@ router.put('/', async (req: Request, res: Response) => {
   const body = req.body as PutProvidersBody
   const reqIp = req.ip ?? ''
 
+  // a malformed body is the client's error: 400, not an unhandled throw that returns
+  // express's default 500 page with a stack trace
+  if (!Array.isArray(body?.Providers)) {
+    res.status(400).set('Content-Type', 'application/json').send({Error: 'invalid body, expected {"Providers": [...]}'})
+    return
+  }
+
   // validate ip before adding to db
   const providers: Provider[] = []
-  for (const provider of body.Providers) {
-    provider.Payload.Addrs = cleanAddrs(provider.Payload.Addrs, reqIp)
-    if (provider.Payload.Addrs.length) {
-      providers.push(provider)
+  try {
+    for (const provider of body.Providers) {
+      provider.Payload.Addrs = cleanAddrs(provider.Payload.Addrs, reqIp)
+      // an unparseable key would otherwise throw inside addProviders and be reported as a 503
+      for (const key of provider.Payload.Keys || []) {
+        normalizeCid(key)
+      }
+      if (provider.Payload.Addrs.length) {
+        providers.push(provider)
+      }
     }
+  } catch (e) {
+    res.status(400).set('Content-Type', 'application/json').send({Error: (e as Error).message})
+    return
   }
 
   prometheus.postProvidersProviders(providers)
@@ -70,7 +86,18 @@ router.put('/', async (req: Request, res: Response) => {
 router.get('/:cid', async (req: Request, res: Response) => {
   prometheus.getProviders()
 
-  const {providers, lastModified} = await database.getProviders(String(req.params.cid))
+  // a non-cid path is the client's error: 400, not an unhandled throw that returns
+  // express's default 500 page with a stack trace
+  let cid: string
+  try {
+    cid = normalizeCid(String(req.params.cid))
+  } catch {
+    res.writeHead(400, {'Content-Type': 'application/json'})
+    res.end(JSON.stringify({Error: `invalid cid '${req.params.cid}'`}))
+    return
+  }
+
+  const {providers, lastModified} = await database.getProviders(cid)
 
   prometheus.getProvidersProviders(providers)
 
