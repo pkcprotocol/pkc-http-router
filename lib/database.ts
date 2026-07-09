@@ -149,35 +149,39 @@ const addCidProvidersToDatabase = async (cid: string, newProviders: Provider[]):
     await new Promise(r => setTimeout(r, 5))
   }
   addCidProvidersToDatabasePending[cid] = true
+  // the pending flag must be cleared even when the read/write throws (e.g. "database is
+  // locked" past busy_timeout), otherwise every later write for this cid spins on the
+  // pending loop forever and the cid can never be announced again until restart
+  try {
+    const {providers: nextProviders} = providersStore!.get(cid) || {providers: {} as Record<string, StoredProvider>}
 
-  const {providers: nextProviders} = providersStore!.get(cid) || {providers: {} as Record<string, StoredProvider>}
-
-  // remove expired providers to save space, db is self cleaning
-  const expiryDate = Date.now() - ttl
-  for (const providerId in nextProviders) {
-    if (nextProviders[providerId].lastModified < expiryDate) {
-      delete nextProviders[providerId]
+    // remove expired providers to save space, db is self cleaning
+    const expiryDate = Date.now() - ttl
+    for (const providerId in nextProviders) {
+      if (nextProviders[providerId].lastModified < expiryDate) {
+        delete nextProviders[providerId]
+      }
     }
-  }
 
-  for (const newProvider of newProviders) {
-    nextProviders[newProvider.Payload.ID] = {
-      provider: {
-        Schema: 'peer',
-        Addrs: newProvider.Payload.Addrs,
-        ID: newProvider.Payload.ID,
-        Protocols: [newProvider.Protocol]
-      },
+    for (const newProvider of newProviders) {
+      nextProviders[newProvider.Payload.ID] = {
+        provider: {
+          Schema: 'peer',
+          Addrs: newProvider.Payload.Addrs,
+          ID: newProvider.Payload.ID,
+          Protocols: [newProvider.Protocol]
+        },
+        lastModified: Date.now()
+      }
+    }
+    const nextValue: CidProviders = {
+      providers: nextProviders,
       lastModified: Date.now()
     }
+    providersStore!.set(cid, nextValue)
+  } finally {
+    delete addCidProvidersToDatabasePending[cid]
   }
-  const nextValue: CidProviders = {
-    providers: nextProviders,
-    lastModified: Date.now()
-  }
-  providersStore!.set(cid, nextValue)
-
-  delete addCidProvidersToDatabasePending[cid]
 
   debug('added providers', cid, newProviders)
 }
