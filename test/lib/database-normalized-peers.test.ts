@@ -74,10 +74,10 @@ describe('normalized peers table', () => {
       lastModified
     })
 
-    store.set(cids[0], entry(['/ip4/5.6.7.8/tcp/4001'], 200))
+    store.set(cids[0], entry(['/ip4/5.6.7.8/tcp/4001'], 200_000))
     // a write carrying an older lastModified for the same peer (e.g. two in-flight
     // announces committing out of order) must not overwrite the newer record
-    store.set(cids[1], entry(['/ip4/1.2.3.4/tcp/4001'], 100))
+    store.set(cids[1], entry(['/ip4/1.2.3.4/tcp/4001'], 100_000))
 
     expect(store.get(cids[0])!.providers['peer1'].provider.Addrs).toEqual(['/ip4/5.6.7.8/tcp/4001'])
     expect(store.get(cids[1])!.providers['peer1'].provider.Addrs).toEqual(['/ip4/5.6.7.8/tcp/4001'])
@@ -128,11 +128,11 @@ describe('legacy providers table migration', () => {
     // peer1 is announced for two cids with different snapshots of its addrs (the newer
     // one must win), peer2 for one of them
     insert.run(cids[0], legacyValue({
-      peer1: {addrs: ['/ip4/1.2.3.4/tcp/4001'], lastModified: 100},
-      peer2: {addrs: ['/ip4/9.9.9.9/tcp/4001'], lastModified: 150}
+      peer1: {addrs: ['/ip4/1.2.3.4/tcp/4001'], lastModified: 100_000},
+      peer2: {addrs: ['/ip4/9.9.9.9/tcp/4001'], lastModified: 150_000}
     }))
     insert.run(cids[1], legacyValue({
-      peer1: {addrs: ['/ip4/5.6.7.8/tcp/4001'], lastModified: 200}
+      peer1: {addrs: ['/ip4/5.6.7.8/tcp/4001'], lastModified: 200_000}
     }))
   }
 
@@ -142,9 +142,9 @@ describe('legacy providers table migration', () => {
     const cid0 = store.get(cids[0])!
     expect(Object.keys(cid0.providers).sort()).toEqual(['peer1', 'peer2'])
     expect(cid0.providers['peer1'].provider.Addrs).toEqual(['/ip4/5.6.7.8/tcp/4001'])
-    expect(cid0.providers['peer1'].lastModified).toBe(100)
+    expect(cid0.providers['peer1'].lastModified).toBe(100_000)
     expect(cid0.providers['peer2'].provider.Addrs).toEqual(['/ip4/9.9.9.9/tcp/4001'])
-    expect(cid0.lastModified).toBe(150)
+    expect(cid0.lastModified).toBe(150_000)
     expect(store.get(cids[1])!.providers['peer1'].provider.Addrs).toEqual(['/ip4/5.6.7.8/tcp/4001'])
 
     // the legacy table is gone

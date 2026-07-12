@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import assert from 'node:assert'
 import path from 'node:path'
 import Debug from 'debug'
+import {CID} from 'multiformats/cid'
 import {randomizeArray, removeDuplicates, normalizeCid} from './utils.js'
 import type {Provider, StoredProvider, PeerProvider, CidProviders, GetProvidersResult} from './types.js'
 
@@ -22,17 +23,31 @@ const sweepInterval = 1000 * 60 * 60
 // synchronous event loop) for long no matter how many rows have expired
 const sweepBatchSize = 1000
 
+// how many rows a startup migration reads per query, bounding memory on big stores
+const migrationBatchSize = 10000
+
+// a cid is stored as its raw ~36 bytes instead of its 59-char base32 string; the api
+// keeps cid strings so only the storage layer knows
+const cidToBytes = (cid: string): Uint8Array => CID.parse(cid).bytes
+
+// timestamps are stored with second precision (the Last-Modified response header has
+// second precision anyway), which encodes as a 4-byte integer instead of 6 for ms
+const msToSeconds = (ms: number): number => Math.floor(ms / 1000)
+const secondsToMs = (seconds: number): number => seconds * 1000
+
 // minimal normalized store backed by the built-in node:sqlite module (no native deps).
 // a peer's provider record (addrs, protocols) is stored once in `peers` and each
-// announcement is a tiny (cid, peerId) row in `cidProviders`. before normalization the
-// full ~1kb provider record was copied into every cid row, which grew the database to
-// gigabytes when a single peer announced over a million cids.
+// announcement is a tiny (cid bytes, peer integer) row in `cidProviders`. the integer
+// reference matters because a handful of peers announce ~1m cids each: repeating the
+// 52-char peerId per row (and again in the lastModified index, which carries the full
+// primary key on a WITHOUT ROWID table) more than doubled the database size.
 class ProvidersStore {
   #db: DatabaseSync
   #getStatement: StatementSync
   #deleteCidStatement: StatementSync
   #insertCidProviderStatement: StatementSync
   #upsertPeerStatement: StatementSync
+  #getPeerNumberStatement: StatementSync
   #clearCidProvidersStatement: StatementSync
   #clearPeersStatement: StatementSync
   #sweepCidProvidersStatement: StatementSync
@@ -49,33 +64,103 @@ class ProvidersStore {
     this.#db.exec('PRAGMA journal_mode = WAL')
     // NORMAL is durable under WAL (only loses a transaction on OS/power crash, not on app crash) and much faster.
     this.#db.exec('PRAGMA synchronous = NORMAL')
-    this.#db.exec('CREATE TABLE IF NOT EXISTS peers (id TEXT PRIMARY KEY, provider TEXT NOT NULL, lastModified INTEGER NOT NULL) STRICT')
+    // must run before CREATE TABLE IF NOT EXISTS, which would silently keep the old shape
+    this.#migrateDenormalizedTables()
+    // AUTOINCREMENT so a swept peer's number is never reused: a stale announcement row
+    // surviving a crash mid-sweep must never resolve to a different, newer peer
+    this.#db.exec('CREATE TABLE IF NOT EXISTS peers (peerNumber INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, provider TEXT NOT NULL, lastModified INTEGER NOT NULL) STRICT')
     // WITHOUT ROWID: the primary key is the row, so each announcement is stored once in
-    // the (cid, peerId) btree instead of a rowid table plus a separate primary key index
-    this.#db.exec('CREATE TABLE IF NOT EXISTS cidProviders (cid TEXT NOT NULL, peerId TEXT NOT NULL, lastModified INTEGER NOT NULL, PRIMARY KEY (cid, peerId)) STRICT, WITHOUT ROWID')
+    // the (cid, peerNumber) btree instead of a rowid table plus a separate primary key index
+    this.#db.exec('CREATE TABLE IF NOT EXISTS cidProviders (cid BLOB NOT NULL, peerNumber INTEGER NOT NULL, lastModified INTEGER NOT NULL, PRIMARY KEY (cid, peerNumber)) STRICT, WITHOUT ROWID')
     this.#migrateLegacyProvidersTable()
     // lastModified indexes make the sweeps indexed range deletes instead of full scans
     this.#db.exec('CREATE INDEX IF NOT EXISTS cidProviders_lastModified ON cidProviders (lastModified)')
     this.#db.exec('CREATE INDEX IF NOT EXISTS peers_lastModified ON peers (lastModified)')
-    this.#getStatement = this.#db.prepare('SELECT cidProviders.peerId AS peerId, cidProviders.lastModified AS lastModified, peers.provider AS provider FROM cidProviders JOIN peers ON peers.id = cidProviders.peerId WHERE cidProviders.cid = ?')
+    this.#getStatement = this.#db.prepare('SELECT peers.id AS peerId, cidProviders.lastModified AS lastModified, peers.provider AS provider FROM cidProviders JOIN peers ON peers.peerNumber = cidProviders.peerNumber WHERE cidProviders.cid = ?')
     this.#deleteCidStatement = this.#db.prepare('DELETE FROM cidProviders WHERE cid = ?')
-    this.#insertCidProviderStatement = this.#db.prepare('INSERT INTO cidProviders (cid, peerId, lastModified) VALUES (?, ?, ?) ON CONFLICT(cid, peerId) DO UPDATE SET lastModified = excluded.lastModified')
+    this.#insertCidProviderStatement = this.#db.prepare('INSERT INTO cidProviders (cid, peerNumber, lastModified) VALUES (?, ?, ?) ON CONFLICT(cid, peerNumber) DO UPDATE SET lastModified = excluded.lastModified')
     // the guard keeps the newest record per peer: an entry round-tripped through get()
     // by another cid's write must not regress the peer's shared addrs with older ones
     this.#upsertPeerStatement = this.#db.prepare('INSERT INTO peers (id, provider, lastModified) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET provider = excluded.provider, lastModified = excluded.lastModified WHERE excluded.lastModified >= peers.lastModified')
+    this.#getPeerNumberStatement = this.#db.prepare('SELECT peerNumber FROM peers WHERE id = ?')
     this.#clearCidProvidersStatement = this.#db.prepare('DELETE FROM cidProviders')
     this.#clearPeersStatement = this.#db.prepare('DELETE FROM peers')
     // delete by primary key from an indexed, bounded subquery so each batch is a quick keyed delete
-    this.#sweepCidProvidersStatement = this.#db.prepare('DELETE FROM cidProviders WHERE (cid, peerId) IN (SELECT cid, peerId FROM cidProviders WHERE lastModified < ? LIMIT ?)')
-    this.#sweepPeersStatement = this.#db.prepare('DELETE FROM peers WHERE id IN (SELECT id FROM peers WHERE lastModified < ? LIMIT ?)')
+    this.#sweepCidProvidersStatement = this.#db.prepare('DELETE FROM cidProviders WHERE (cid, peerNumber) IN (SELECT cid, peerNumber FROM cidProviders WHERE lastModified < ? LIMIT ?)')
+    this.#sweepPeersStatement = this.#db.prepare('DELETE FROM peers WHERE peerNumber IN (SELECT peerNumber FROM peers WHERE lastModified < ? LIMIT ?)')
     this.#countsStatement = this.#db.prepare('SELECT (SELECT COUNT(*) FROM peers) AS peers, (SELECT COUNT(*) FROM cidProviders) AS cidProviders')
   }
 
-  // one-time, pure sql migration of the pre-normalization schema (one row per cid with
-  // every provider record copied into a json blob) into the normalized tables, so old
-  // production stores upgrade in place on startup. also handles the oldest schema that
-  // had no lastModified column, since only the json value is read. transactional: a
-  // crash mid-migration leaves the legacy table intact and it retries on next startup.
+  // sqlite never returns freed pages to the filesystem on its own and the WAL file stays
+  // at its high-water mark, so after a migration halves the data, reclaim both once
+  #reclaimSpace(): void {
+    this.#db.exec('VACUUM')
+    this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+  }
+
+  // one-time, in-place migration of the previous normalized schema (text cid, text
+  // peerId repeated per announcement, millisecond timestamps) into the compact one.
+  // transactional: a crash mid-migration leaves the old tables intact and it retries on
+  // next startup. runs synchronously before the server starts serving, like all startup
+  // migrations here.
+  #migrateDenormalizedTables(): void {
+    const cidColumn = this.#db.prepare("SELECT type FROM pragma_table_info('cidProviders') WHERE name = 'cid'").get() as {type: string} | undefined
+    if (!cidColumn || cidColumn.type === 'BLOB') {
+      return
+    }
+    this.#db.exec('BEGIN IMMEDIATE')
+    try {
+      // index names are database-global, so free them up for the new tables
+      this.#db.exec('DROP INDEX IF EXISTS cidProviders_lastModified')
+      this.#db.exec('DROP INDEX IF EXISTS peers_lastModified')
+      this.#db.exec('ALTER TABLE peers RENAME TO peers_denormalized')
+      this.#db.exec('ALTER TABLE cidProviders RENAME TO cidProviders_denormalized')
+      this.#db.exec('CREATE TABLE peers (peerNumber INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, provider TEXT NOT NULL, lastModified INTEGER NOT NULL) STRICT')
+      this.#db.exec('CREATE TABLE cidProviders (cid BLOB NOT NULL, peerNumber INTEGER NOT NULL, lastModified INTEGER NOT NULL, PRIMARY KEY (cid, peerNumber)) STRICT, WITHOUT ROWID')
+      // integer division truncates like msToSeconds for these positive timestamps
+      this.#db.exec('INSERT INTO peers (id, provider, lastModified) SELECT id, provider, lastModified / 1000 FROM peers_denormalized')
+      const peerNumbers = new Map<string, number>()
+      for (const row of this.#db.prepare('SELECT peerNumber, id FROM peers').all() as {peerNumber: number; id: string}[]) {
+        peerNumbers.set(row.id, row.peerNumber)
+      }
+      const insertCidProvider = this.#db.prepare('INSERT OR REPLACE INTO cidProviders (cid, peerNumber, lastModified) VALUES (?, ?, ?)')
+      // keyed pagination over the old primary key, bounding memory on the ~1m-row store
+      const selectBatch = this.#db.prepare('SELECT cid, peerId, lastModified FROM cidProviders_denormalized WHERE (cid, peerId) > (?, ?) ORDER BY cid, peerId LIMIT ?')
+      let lastCid = ''
+      let lastPeerId = ''
+      while (true) {
+        const rows = selectBatch.all(lastCid, lastPeerId, migrationBatchSize) as {cid: string; peerId: string; lastModified: number}[]
+        if (!rows.length) {
+          break
+        }
+        for (const row of rows) {
+          const peerNumber = peerNumbers.get(row.peerId)
+          // a dangling announcement (e.g. from a crash between the two sweep passes)
+          // was already invisible to get()'s join, so drop it instead of crashing
+          if (peerNumber === undefined) {
+            debug('migration: dropping announcement of unknown peer', row.peerId)
+            continue
+          }
+          insertCidProvider.run(cidToBytes(row.cid), peerNumber, msToSeconds(row.lastModified))
+        }
+        lastCid = rows[rows.length - 1].cid
+        lastPeerId = rows[rows.length - 1].peerId
+      }
+      this.#db.exec('DROP TABLE cidProviders_denormalized')
+      this.#db.exec('DROP TABLE peers_denormalized')
+      this.#db.exec('COMMIT')
+    } catch (error) {
+      this.#db.exec('ROLLBACK')
+      throw error
+    }
+    this.#reclaimSpace()
+  }
+
+  // one-time migration of the pre-normalization schema (one row per cid with every
+  // provider record copied into a json blob) into the compact tables, so old production
+  // stores upgrade in place on startup. also handles the oldest schema that had no
+  // lastModified column, since only the json value is read. transactional: a crash
+  // mid-migration leaves the legacy table intact and it retries on next startup.
   #migrateLegacyProvidersTable(): void {
     const legacyTable = this.#db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'providers'").get()
     if (!legacyTable) {
@@ -83,62 +168,76 @@ class ProvidersStore {
     }
     this.#db.exec('BEGIN IMMEDIATE')
     try {
-      // keep the newest record per peer across all its cid rows ("WHERE true" is required
-      // by sqlite to disambiguate the join from the ON CONFLICT clause)
-      this.#db.exec(`
-        INSERT INTO peers (id, provider, lastModified)
-        SELECT entry.key, json_extract(entry.value, '$.provider'), CAST(json_extract(entry.value, '$.lastModified') AS INTEGER)
-        FROM providers, json_each(providers.value, '$.providers') AS entry
-        WHERE true
-        ON CONFLICT(id) DO UPDATE SET provider = excluded.provider, lastModified = excluded.lastModified
-        WHERE excluded.lastModified >= peers.lastModified
-      `)
-      this.#db.exec(`
-        INSERT INTO cidProviders (cid, peerId, lastModified)
-        SELECT providers.key, entry.key, CAST(json_extract(entry.value, '$.lastModified') AS INTEGER)
-        FROM providers, json_each(providers.value, '$.providers') AS entry
-        WHERE true
-        ON CONFLICT(cid, peerId) DO UPDATE SET lastModified = excluded.lastModified
-      `)
+      const upsertPeer = this.#db.prepare('INSERT INTO peers (id, provider, lastModified) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET provider = excluded.provider, lastModified = excluded.lastModified WHERE excluded.lastModified >= peers.lastModified')
+      const getPeerNumber = this.#db.prepare('SELECT peerNumber FROM peers WHERE id = ?')
+      const insertCidProvider = this.#db.prepare('INSERT OR REPLACE INTO cidProviders (cid, peerNumber, lastModified) VALUES (?, ?, ?)')
+      const selectBatch = this.#db.prepare('SELECT key, value FROM providers WHERE key > ? ORDER BY key LIMIT ?')
+      let lastKey = ''
+      while (true) {
+        const rows = selectBatch.all(lastKey, migrationBatchSize) as {key: string; value: string}[]
+        if (!rows.length) {
+          break
+        }
+        for (const row of rows) {
+          let value: CidProviders
+          let cid: Uint8Array
+          try {
+            value = JSON.parse(row.value) as CidProviders
+            cid = cidToBytes(row.key)
+          } catch (error) {
+            debug('migration: dropping unparseable legacy row', row.key, error)
+            continue
+          }
+          for (const peerId in value.providers) {
+            // keep the newest record per peer across all its cid rows via the upsert guard
+            const {provider, lastModified} = value.providers[peerId]
+            const seconds = msToSeconds(lastModified)
+            upsertPeer.run(peerId, JSON.stringify(provider), seconds)
+            const {peerNumber} = getPeerNumber.get(peerId) as {peerNumber: number}
+            insertCidProvider.run(cid, peerNumber, seconds)
+          }
+        }
+        lastKey = rows[rows.length - 1].key
+      }
       this.#db.exec('DROP TABLE providers')
       this.#db.exec('COMMIT')
     } catch (error) {
       this.#db.exec('ROLLBACK')
       throw error
     }
-    // the legacy table was ~10x the size of the normalized data and sqlite never shrinks
-    // the file on its own (freed pages are only reused), so reclaim the space once now.
-    // under WAL the vacuumed image lives in the -wal file until a checkpoint, so force
-    // one or the main file would stay at its multi-gigabyte size until sqlite gets to it
-    this.#db.exec('VACUUM')
-    this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    // the legacy table was ~10x the size of the normalized data
+    this.#reclaimSpace()
   }
 
   get(key: string): CidProviders | undefined {
-    const rows = this.#getStatement.all(key) as {peerId: string; lastModified: number; provider: string}[]
+    const rows = this.#getStatement.all(cidToBytes(key)) as {peerId: string; lastModified: number; provider: string}[]
     if (!rows.length) {
       return undefined
     }
     const providers: Record<string, StoredProvider> = {}
     let lastModified = 0
     for (const row of rows) {
-      providers[row.peerId] = {provider: JSON.parse(row.provider) as PeerProvider, lastModified: row.lastModified}
-      if (row.lastModified > lastModified) {
-        lastModified = row.lastModified
+      const lastModifiedMs = secondsToMs(row.lastModified)
+      providers[row.peerId] = {provider: JSON.parse(row.provider) as PeerProvider, lastModified: lastModifiedMs}
+      if (lastModifiedMs > lastModified) {
+        lastModified = lastModifiedMs
       }
     }
     return {providers, lastModified}
   }
 
   set(key: string, value: CidProviders): void {
+    const cid = cidToBytes(key)
     // replace the cid's announcements and refresh each peer's shared record atomically
     this.#db.exec('BEGIN IMMEDIATE')
     try {
-      this.#deleteCidStatement.run(key)
+      this.#deleteCidStatement.run(cid)
       for (const peerId in value.providers) {
         const {provider, lastModified} = value.providers[peerId]
-        this.#upsertPeerStatement.run(peerId, JSON.stringify(provider), lastModified)
-        this.#insertCidProviderStatement.run(key, peerId, lastModified)
+        const seconds = msToSeconds(lastModified)
+        this.#upsertPeerStatement.run(peerId, JSON.stringify(provider), seconds)
+        const {peerNumber} = this.#getPeerNumberStatement.get(peerId) as {peerNumber: number}
+        this.#insertCidProviderStatement.run(cid, peerNumber, seconds)
       }
       this.#db.exec('COMMIT')
     } catch (error) {
@@ -162,7 +261,7 @@ class ProvidersStore {
   // currently being touched). deletes in bounded batches, yielding between each, so the
   // write lock / synchronous event-loop block stays short regardless of table size.
   async sweep(): Promise<void> {
-    const expiryDate = Date.now() - ttl
+    const expiryDate = msToSeconds(Date.now() - ttl)
     let deleted: number
     do {
       deleted = Number(this.#sweepCidProvidersStatement.run(expiryDate, sweepBatchSize).changes)
