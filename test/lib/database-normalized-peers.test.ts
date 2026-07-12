@@ -1,8 +1,11 @@
 import {describe, it, expect, beforeAll, afterEach} from 'vitest'
 import {DatabaseSync} from 'node:sqlite'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import {CID} from 'multiformats/cid'
+import * as Digest from 'multiformats/hashes/digest'
 import database from '../../lib/database.js'
 import type {Provider, CidProviders} from '../../lib/types.js'
 
@@ -21,6 +24,12 @@ const cids = [
   'bafybeiczsscdsbs7ffqz55asqdf3smv6klcw3gofszvwlyarci47bgf354',
   'bafybeic2vguwwzo4dddbxjas4pzlpbujxxi7erqfkwhmm2pls6c4q6iizm'
 ]
+
+// deterministic valid cids, same shape as production keys (cidv1 dag-pb base32)
+const makeCid = (i: number): string => {
+  const hash = crypto.createHash('sha256').update(`cid${i}`).digest()
+  return CID.create(1, 0x70, Digest.create(0x12, hash)).toString()
+}
 
 const makeProvider = (id: string, keys: string[], addrs = ['/ip4/1.2.3.4/tcp/4001']): Provider[] => [
   {Schema: 'bitswap', Protocol: 'transport-bitswap', Payload: {ID: id, Keys: keys, Addrs: addrs}}
@@ -192,18 +201,21 @@ describe('legacy providers table migration', () => {
   it('vacuum during migration shrinks the file to the normalized size', () => {
     const file = tmpDbFile()
     const legacyDb = createLegacyDb(file)
-    // one heavy peer record duplicated into many cid rows, like production
+    // one heavy peer record duplicated into many cid rows, like production. the keys
+    // must be real cids: the migration parses them into bytes and drops unparseable
+    // ones, so fake keys would shrink the file without migrating anything
     const insert = legacyDb.prepare('INSERT INTO providers (key, value) VALUES (?, ?)')
     const addrs = Array.from({length: 10}, (_, i) => `/ip4/91.234.199.189/udp/4001/quic-v1/webtransport/certhash/uEiAOG9izJlviOJcRCtgUPy8a0_PL2E0EyGMuJL4Dki1GXQ${i}`)
     for (let i = 0; i < 2000; i++) {
-      insert.run(`cid${i}`, legacyValue({peer1: {addrs, lastModified: 100}}))
+      insert.run(makeCid(i), legacyValue({peer1: {addrs, lastModified: 100_000}}))
     }
     legacyDb.close()
     const legacySize = fs.statSync(file).size
 
-    new ProvidersStore(file)
+    const store = new ProvidersStore(file)
+    // every row survived the migration, the ~1kb record is stored once instead of 2000 times
+    expect(store.counts()).toEqual({peers: 1, cidProviders: 2000})
 
-    // the ~1kb record is now stored once instead of 2000 times
     const migratedSize = fs.statSync(file).size
     expect(migratedSize).toBeLessThan(legacySize / 5)
   })

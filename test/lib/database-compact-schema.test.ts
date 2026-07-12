@@ -199,3 +199,94 @@ describe('denormalized schema migration', () => {
     expect(migratedSize).toBeLessThan(denormalizedSize * 0.6)
   })
 })
+
+describe('legacy providers table migration into the compact schema', () => {
+  // the pre-normalization production schema: one row per cid with every provider record
+  // copied into a json blob
+  const createLegacyDb = (file: string): DatabaseSync => {
+    const db = new DatabaseSync(file)
+    db.exec('CREATE TABLE providers (key TEXT PRIMARY KEY, value TEXT NOT NULL, lastModified INTEGER NOT NULL DEFAULT 0) STRICT')
+    return db
+  }
+
+  const legacyValue = (providers: Record<string, {addrs: string[]; lastModified: number}>): string => {
+    const value: CidProviders = {providers: {}, lastModified: 0}
+    for (const peerId in providers) {
+      value.providers[peerId] = {
+        provider: {Schema: 'peer', Addrs: providers[peerId].addrs, ID: peerId, Protocols: ['transport-bitswap']},
+        lastModified: providers[peerId].lastModified
+      }
+      value.lastModified = Math.max(value.lastModified, providers[peerId].lastModified)
+    }
+    return JSON.stringify(value)
+  }
+
+  // more legacy rows than one migration batch, like the old production store where a
+  // couple of peers were copied into over a million cid rows. exercises the keyed
+  // pagination across batch boundaries and the newest-record-wins guard when the same
+  // peer appears with different snapshots throughout the table.
+  it('migrates a store larger than one migration batch', () => {
+    const rowCount = 12_000 // migration batch size is 10k
+    const peer2Every = 4
+    const file = tmpDbFile()
+    const legacyDb = createLegacyDb(file)
+    const insert = legacyDb.prepare('INSERT INTO providers (key, value) VALUES (?, ?)')
+    let newestAddrs: string[] = []
+    legacyDb.exec('BEGIN')
+    for (let i = 0; i < rowCount; i++) {
+      // each row carries its own snapshot of peer1's addrs; only the newest may win,
+      // regardless of the key order the migration reads them in
+      const addrs = [`/ip4/1.2.3.${i % 256}/tcp/${1000 + i}`]
+      const providers: Record<string, {addrs: string[]; lastModified: number}> = {
+        peer1: {addrs, lastModified: 100_000 + i * 1000}
+      }
+      if (i === rowCount - 1) {
+        newestAddrs = addrs
+      }
+      if (i % peer2Every === 0) {
+        providers['peer2'] = {addrs: ['/ip4/9.9.9.9/tcp/4001'], lastModified: 500_000}
+      }
+      insert.run(makeCid(i), legacyValue(providers))
+    }
+    legacyDb.exec('COMMIT')
+    legacyDb.close()
+    const legacySize = fs.statSync(file).size
+
+    const store = new ProvidersStore(file)
+
+    expect(store.counts()).toEqual({peers: 2, cidProviders: rowCount + rowCount / peer2Every})
+    // every cid resolves, and peer1's shared record is the newest snapshot everywhere
+    for (const i of [0, 1, 9_999, 10_000, rowCount - 1]) {
+      const value = store.get(makeCid(i))!
+      expect(value.providers['peer1'].provider.Addrs).toEqual(newestAddrs)
+      expect(value.providers['peer1'].lastModified).toBe(100_000 + i * 1000)
+      if (i % peer2Every === 0) {
+        expect(value.providers['peer2'].provider.Addrs).toEqual(['/ip4/9.9.9.9/tcp/4001'])
+      }
+    }
+
+    // the duplicated json records collapsed into the compact tables
+    const migratedSize = fs.statSync(file).size
+    expect(migratedSize).toBeLessThan(legacySize / 2)
+
+    const inspect = new DatabaseSync(file)
+    const cidType = inspect.prepare("SELECT type FROM pragma_table_info('cidProviders') WHERE name = 'cid'").get() as {type: string}
+    expect(cidType.type).toBe('BLOB')
+    expect(inspect.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'providers'").get()).toBe(undefined)
+    inspect.close()
+  })
+
+  it('drops rows whose key is not a parseable cid and keeps the rest', () => {
+    const file = tmpDbFile()
+    const legacyDb = createLegacyDb(file)
+    const insert = legacyDb.prepare('INSERT INTO providers (key, value) VALUES (?, ?)')
+    insert.run(cids[0], legacyValue({peer1: {addrs: ['/ip4/1.2.3.4/tcp/4001'], lastModified: 100_000}}))
+    insert.run('not-a-cid', legacyValue({peer1: {addrs: ['/ip4/1.2.3.4/tcp/4001'], lastModified: 100_000}}))
+    insert.run(cids[1], 'not json either')
+    legacyDb.close()
+
+    const store = new ProvidersStore(file)
+    expect(store.counts()).toEqual({peers: 1, cidProviders: 1})
+    expect(store.get(cids[0])!.providers['peer1'].provider.Addrs).toEqual(['/ip4/1.2.3.4/tcp/4001'])
+  })
+})
