@@ -1,0 +1,37 @@
+{
+  "git": {
+    "requireCleanWorkingDir": false,
+    "requireCommits": true,
+    "requireCommitsFail": false,
+    "commit": false,
+    "tagAnnotation": "v${version}",
+    "tagName": "v${version}",
+    "push": true,
+    "pushArgs": ["--follow-tags"]
+  },
+  "npm": { "publish": false },
+  "github": {
+    "release": true,
+    "releaseName": "v${version}"
+  },
+  "plugins": {
+    "@release-it/conventional-changelog": {
+      "preset": {
+        "name": "conventionalcommits",
+        "preMajor": true,
+        "types": [
+          { "type": "feat", "section": "Features" },
+          { "type": "fix", "section": "Bug Fixes" },
+          { "type": "perf", "section": "Performance" },
+          { "type": "revert", "section": "Reverts" },
+          { "type": "build", "section": "Build" }
+        ]
+      },
+      "infile": "CHANGELOG.md",
+      "header": "# Changelog"
+    }
+  },
+  "hooks": {
+    "before:git:release": "npm i --package-lock-only && git add CHANGELOG.md package.json package-lock.json && git commit -m 'chore(release): ${version} [skip ci]'"
+  }
+}
