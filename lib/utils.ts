@@ -74,6 +74,8 @@ export const ipIsPrivate = (ip: string): boolean => {
   return privateIpRanges.has(parsed.range())
 }
 
+const ipIsUnspecified = (ip: string): boolean => parseIp(ip)?.range() === 'unspecified'
+
 export const ipIsEqual = (a: string, b: string): boolean => {
   const parsedA = parseIp(a)
   const parsedB = parseIp(b)
@@ -92,14 +94,22 @@ export const cleanAddrs = (addrs: string[], reqIp: string): string[] => {
     reqIp = reqIp.replace('::ffff:', '')
   }
 
-  // fix the ip 0.0.0.0 kubo problem: only rewrite the unspecified ip component itself,
-  // a bare replace of '::' would corrupt legit compressed ipv6 addrs like /ip6/2a01:4f8::2
-  if (net.isIP(reqIp) === 4) {
-    addrs = addrs.filter(addr => !addr.startsWith('/ip6/::')).map(addr => addr.replace(/^\/ip4\/0\.0\.0\.0(\/|$)/, `/ip4/${reqIp}$1`))
-  }
-  else if (net.isIP(reqIp) === 6) {
-    addrs = addrs.filter(addr => !addr.startsWith('/ip4/0.0.0.0')).map(addr => addr.replace(/^\/ip6\/::(\/|$)/, `/ip6/${reqIp}$1`))
-  }
+  // fix the ip 0.0.0.0 kubo problem: kubo announces the unspecified address when it doesn't
+  // know its public ip, so substitute the ip the request actually came from. parse the ip
+  // component instead of matching the literal strings '/ip4/0.0.0.0' and '/ip6/::' so alternate
+  // spellings like /ip6/0:0:0:0:0:0:0:0 can't slip through, and drop unspecified addrs of the
+  // other family than the request ip, they can't be substituted
+  const reqIpVersion = net.isIP(reqIp)
+  addrs = addrs.flatMap(addr => {
+    const ipComponent = addr.match(/^\/ip(4|6)\/([^/]+)/)
+    if (!ipComponent || !ipIsUnspecified(ipComponent[2])) {
+      return [addr]
+    }
+    if (Number(ipComponent[1]) !== reqIpVersion) {
+      return []
+    }
+    return [`/ip${ipComponent[1]}/${reqIp}${addr.slice(ipComponent[0].length)}`]
+  })
 
   // useful for testing
   if (process.env.NO_IP_VALIDATE) {
@@ -119,6 +129,11 @@ export const cleanAddrs = (addrs: string[], reqIp: string): string[] => {
     else if (!ipIsEqual(ip, reqIp)) {
       // TODO: how to stop spam from p2p circuit addresses?
       if (!addr.includes('p2p-circuit')) {
+        continue
+      }
+      // circuit addrs are exempt from the ip-equality check, but a private or unspecified
+      // relay ip is unreachable for everyone, don't store it
+      if (ipIsPrivate(ip)) {
         continue
       }
     }

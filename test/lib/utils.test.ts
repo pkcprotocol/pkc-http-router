@@ -90,5 +90,44 @@ describe('utils', () => {
       const cleaned = cleanAddrs([`/ip6/${reqIp6}/tcp/4001`], reqIp6)
       expect(cleaned).toEqual([`/ip6/${reqIp6}/tcp/4001`])
     })
+
+    // ROOT CAUSE: the unspecified-address handling matched only the literal strings
+    // '/ip4/0.0.0.0' and '/ip6/::', so alternate spellings of the ipv6 unspecified address
+    // (/ip6/0:0:0:0:0:0:0:0, /ip6/0::) skipped both the rewrite and the cross-family filter.
+    // plain addrs still got dropped later by the ip-equality check, but p2p-circuit addrs are
+    // exempt from that check, so circuit addrs with an unspecified (or private) relay ip were
+    // stored verbatim in the database
+    // FIX: parse the ip component and treat every unspecified-range spelling as the kubo
+    // 0.0.0.0 problem, and drop p2p-circuit addrs whose relay ip is private or unspecified
+    describe('unspecified and private ips can not bypass validation', () => {
+      const reqIp6 = '2606:4700:4700::1111'
+      const peerId = 'QmUMqvMcHSFxxDn6sXVhfU641HQtp6WRv84Zez5TDPeGko'
+
+      it('rewrites alternate spellings of the ipv6 unspecified address to the request ip', () => {
+        expect(cleanAddrs(['/ip6/0:0:0:0:0:0:0:0/tcp/4001'], reqIp6)).toEqual([`/ip6/${reqIp6}/tcp/4001`])
+        expect(cleanAddrs(['/ip6/0::/tcp/4001'], reqIp6)).toEqual([`/ip6/${reqIp6}/tcp/4001`])
+        expect(cleanAddrs(['/ip6/::0/tcp/4001'], reqIp6)).toEqual([`/ip6/${reqIp6}/tcp/4001`])
+      })
+
+      it('drops unspecified addrs of the other family than the request ip', () => {
+        expect(cleanAddrs(['/ip6/0::/tcp/4001'], reqIp)).toEqual([])
+        expect(cleanAddrs(['/ip4/0.0.0.0/tcp/4001'], reqIp6)).toEqual([])
+      })
+
+      it('drops p2p-circuit addrs with an unspecified relay ip', () => {
+        expect(cleanAddrs([`/ip6/0:0:0:0:0:0:0:0/tcp/4001/p2p/${peerId}/p2p-circuit`], reqIp)).toEqual([])
+        expect(cleanAddrs([`/ip6/0::/tcp/4001/p2p/${peerId}/p2p-circuit`], reqIp)).toEqual([])
+      })
+
+      it('drops p2p-circuit addrs with a private relay ip', () => {
+        expect(cleanAddrs([`/ip4/192.168.0.1/tcp/4001/p2p/${peerId}/p2p-circuit`], reqIp)).toEqual([])
+        expect(cleanAddrs([`/ip6/::1/tcp/4001/p2p/${peerId}/p2p-circuit`], reqIp6)).toEqual([])
+      })
+
+      it('keeps p2p-circuit addrs with a public relay ip different from the request ip', () => {
+        const addr = `/ip4/8.8.8.8/tcp/4001/p2p/${peerId}/p2p-circuit`
+        expect(cleanAddrs([addr], reqIp)).toEqual([addr])
+      })
+    })
   })
 })
