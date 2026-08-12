@@ -1,0 +1,186 @@
+# build, test and publish the docker image to ghcr.io on every github release,
+# so images are never built or pushed by hand
+name: Docker Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and publish (e.g. v0.0.4)'
+        required: true
+
+jobs:
+  docker-test:
+    name: Build and test Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Resolve release tag
+        id: ref
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.ref.outputs.tag }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # build for the local platform only (amd64) and load into docker for testing
+      - name: Build image for testing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: pkc-http-router:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start the router with docker compose
+        env:
+          PKC_HTTP_ROUTER_IMAGE: pkc-http-router:test
+          HTTP_PORT: 8099
+          HTTP_BIND_IP: 127.0.0.1
+          # so the announced multiaddr below is not cleaned against the request ip
+          NO_IP_VALIDATE: 1
+        run: docker compose up -d
+
+      - name: Wait for the container to report healthy
+        run: |
+          for i in $(seq 1 60); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' pkc-http-router 2>/dev/null || echo starting)
+            if [ "$status" = "healthy" ]; then
+              echo "healthy after ${i}s"
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              echo "container went unhealthy"
+              docker compose logs --no-color
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "container did not become healthy within 60s"
+          docker compose logs --no-color
+          exit 1
+
+      - name: Check the welcome route
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8099/)
+          if [ "$code" != "200" ]; then
+            echo "FAIL: GET / returned $code, expected 200"
+            exit 1
+          fi
+          echo "GET / returned 200"
+
+      - name: Announce a provider and read it back
+        run: |
+          CID=QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG
+          PEER=12D3KooWQYV9dGMFoRzNStwpXztXaBUjtPqi6aU76ZgUriHhKust
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+            http://127.0.0.1:8099/routing/v1/providers/ \
+            -H 'content-type: application/json' \
+            -d "{\"Providers\":[{\"Schema\":\"announce\",\"Protocol\":\"transport-bitswap\",\"Signature\":\"x\",\"Payload\":{\"Keys\":[\"$CID\"],\"Timestamp\":\"2026-01-01T00:00:00Z\",\"AdvisoryTTL\":\"24h0m0s\",\"ID\":\"$PEER\",\"Addrs\":[\"/ip4/1.2.3.4/tcp/4001\"]}}]}")
+          if [ "$code" != "200" ]; then
+            echo "FAIL: PUT /routing/v1/providers/ returned $code, expected 200"
+            exit 1
+          fi
+
+          body=$(curl -s "http://127.0.0.1:8099/routing/v1/providers/$CID")
+          echo "$body"
+          if ! echo "$body" | grep -q "$PEER"; then
+            echo "FAIL: the announced peer was not returned"
+            exit 1
+          fi
+          echo "provider roundtrip ok"
+
+      - name: Check the database was written to the mounted volume
+        run: |
+          if [ ! -f data/database.sqlite ]; then
+            echo "FAIL: data/database.sqlite was not created on the host"
+            ls -la data || true
+            exit 1
+          fi
+          echo "data/database.sqlite exists"
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Stop and remove docker compose services
+        if: always()
+        run: docker compose down -v
+
+  docker-push:
+    name: Push Docker image
+    needs:
+      - docker-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Resolve release tag
+        id: ref
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.ref.outputs.tag }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/pkcprotocol/pkc-http-router
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.ref.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.tag }}
+            type=raw,value=latest
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # full multi-arch build and push
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

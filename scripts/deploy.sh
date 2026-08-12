@@ -44,12 +44,12 @@ for FILE_NAME in ${FILE_NAMES[@]}; do
   sshpass -p "$DEPLOY_PASSWORD" scp $FILE_NAME "$DEPLOY_USER"@"$DEPLOY_HOST":/home/pkc-http-router
 done
 
-# --build rebuilds the image from the code that was just pulled, without it compose
-# would keep running the previous image
+# --pull always picks up the image ci published for the latest release, the image is
+# never built on the server
 SCRIPT="
 set -e
 cd /home/pkc-http-router
-docker compose ${DEPLOY_PROFILE:+--profile $DEPLOY_PROFILE} up -d --build
+docker compose ${DEPLOY_PROFILE:+--profile $DEPLOY_PROFILE} up -d --pull always
 docker compose ps
 "
 

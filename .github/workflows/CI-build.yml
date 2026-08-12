@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # to dispatch the docker publish workflow below
+      actions: write
     if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master' }}
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +34,24 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Get version before release
+        id: before
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
       - name: Run release-it
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run release -- --ci
+
+      - name: Get version after release
+        id: after
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      # release-it creates the github release with GITHUB_TOKEN, and events triggered by
+      # that token do not start other workflows, so "on: release" would never fire.
+      # workflow_dispatch is the documented exception, so kick the image build off here.
+      - name: Trigger the docker image build and publish
+        if: ${{ steps.before.outputs.version != steps.after.outputs.version }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run docker-publish.yml -f tag=v${{ steps.after.outputs.version }}

@@ -10,8 +10,11 @@
 
 services:
   router:
-    build: .
-    image: pkc-http-router
+    # published by .github/workflows/docker-publish.yml on every github release,
+    # never pushed by hand. override PKC_HTTP_ROUTER_IMAGE to run a different tag
+    image: ${PKC_HTTP_ROUTER_IMAGE:-ghcr.io/pkcprotocol/pkc-http-router:latest}
+    # uncomment to build from source instead of pulling the published image
+    # build: .
     container_name: pkc-http-router
     restart: always
     # ${HTTP_PORT} on the host -> 3000 in the container. set HTTP_BIND_IP to 127.0.0.1

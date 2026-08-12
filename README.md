@@ -58,12 +58,12 @@ cp .env.example .env
 docker compose up -d
 ```
 
-The router is now on port 80 (`HTTP_PORT` in `.env` moves it). `docker compose logs -f` follows the logs, `docker compose down` stops it. The SQLite database lives in `data/` on the host, so it survives a rebuild.
+This pulls the prebuilt image from `ghcr.io/pkcprotocol/pkc-http-router`, so nothing is compiled on the host. The router is now on port 80 (`HTTP_PORT` in `.env` moves it). `docker compose logs -f` follows the logs, `docker compose down` stops it. The SQLite database lives in `data/` on the host, so it survives an image upgrade.
 
-To deploy an update, pull and rebuild — without `--build` compose keeps running the old image:
+To update, pull the newest published image — without `--pull always` compose keeps running the one it already has:
 
 ```
-git pull && docker compose up -d --build
+git pull && docker compose up -d --pull always
 ```
 
 The `.env` file takes the same settings as the environment variables above, plus:
@@ -73,6 +73,13 @@ The `.env` file takes the same settings as the environment variables above, plus
 | `HTTP_PORT` | `80` | Host port mapped to the router (inside the container it always listens on 3000). |
 | `HTTP_BIND_IP` | `0.0.0.0` | Host interface that port binds to. Set to `127.0.0.1` when a reverse proxy or tunnel terminates TLS in front of it. |
 | `LOG_KEY` | _unset_ | When set, passed as `--log-key`, so per-request logs go to `log/<LOG_KEY>` on the host. |
+| `PKC_HTTP_ROUTER_IMAGE` | `ghcr.io/pkcprotocol/pkc-http-router:latest` | Image to run. Pin a release tag here to stay on a known version. |
+
+##### the image
+
+The image is built and published by CI only — `.github/workflows/docker-publish.yml` runs on every GitHub release, smoke tests the image (health check, welcome route, and a provider announce/read roundtrip through docker compose), then pushes `linux/amd64` and `linux/arm64` to `ghcr.io/pkcprotocol/pkc-http-router` tagged with the version and `latest`. Nobody builds or pushes images by hand.
+
+To run a modified working copy, uncomment the `build: .` line under the `router` service in `docker-compose.yml` and use `docker compose up -d --build`. That is for local work only, the result should never be pushed to the registry.
 
 ##### https
 
@@ -90,7 +97,7 @@ Without the profile flag only the router starts, so `docker compose up -d` stays
 
 ##### deploying to a server over ssh
 
-`scripts/deploy.sh` clones or pulls the repo on a remote host, copies the local `.env` over and runs `docker compose up -d --build`. It reads `DEPLOY_HOST`, `DEPLOY_USER` and `DEPLOY_PASSWORD` (and optionally `DEPLOY_PROFILE=https`) from a `.deploy-env` file, and needs `sshpass` locally. `scripts/logs.sh` tails the remote logs with the same credentials.
+`scripts/deploy.sh` clones or pulls the repo on a remote host, copies the local `.env` over and runs `docker compose up -d --pull always`. It reads `DEPLOY_HOST`, `DEPLOY_USER` and `DEPLOY_PASSWORD` (and optionally `DEPLOY_PROFILE=https`) from a `.deploy-env` file, and needs `sshpass` locally. `scripts/logs.sh` tails the remote logs with the same credentials.
 
 #### running without docker
 
