@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.0.5](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.4...v0.0.5) (2026-08-12)
+
 ## [0.0.4](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.3...v0.0.4) (2026-08-12)
 
 ### Features
