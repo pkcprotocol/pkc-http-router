@@ -49,6 +49,51 @@ Logging is **off by default**.
 
 #### getting started
 
+Docker compose is the recommended way to run this, both locally and in production.
+
+```
+sudo apt install docker.io docker-compose-v2
+git clone https://github.com/pkcprotocol/pkc-http-router.git && cd pkc-http-router
+cp .env.example .env
+docker compose up -d
+```
+
+The router is now on port 80 (`HTTP_PORT` in `.env` moves it). `docker compose logs -f` follows the logs, `docker compose down` stops it. The SQLite database lives in `data/` on the host, so it survives a rebuild.
+
+To deploy an update, pull and rebuild — without `--build` compose keeps running the old image:
+
+```
+git pull && docker compose up -d --build
+```
+
+The `.env` file takes the same settings as the environment variables above, plus:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `HTTP_PORT` | `80` | Host port mapped to the router (inside the container it always listens on 3000). |
+| `HTTP_BIND_IP` | `0.0.0.0` | Host interface that port binds to. Set to `127.0.0.1` when a reverse proxy or tunnel terminates TLS in front of it. |
+| `LOG_KEY` | _unset_ | When set, passed as `--log-key`, so per-request logs go to `log/<LOG_KEY>` on the host. |
+
+##### https
+
+The `https` profile adds nginx on 443 in front of the router, with a Let's Encrypt certificate issued and renewed over the Cloudflare DNS-01 challenge. DNS-01 means the domain never has to be reachable on port 80 to issue the cert, but it does mean the domain has to be on a Cloudflare zone.
+
+Set `DOMAIN`, `CERT_EMAIL` and `CLOUDFLARE_API_TOKEN` (a token with `Zone:DNS:Edit` on that zone) in `.env`, then:
+
+```
+docker compose --profile https up -d
+```
+
+The certbot container issues the cert on first start and re-checks for renewal once a day; nginx waits for the certificate to exist before starting, and reloads itself when it is renewed. Certificates are kept in `letsencrypt/` on the host, so recreating the containers does not re-issue them.
+
+Without the profile flag only the router starts, so `docker compose up -d` stays the plain-HTTP path even with those variables set.
+
+##### deploying to a server over ssh
+
+`scripts/deploy.sh` clones or pulls the repo on a remote host, copies the local `.env` over and runs `docker compose up -d --build`. It reads `DEPLOY_HOST`, `DEPLOY_USER` and `DEPLOY_PASSWORD` (and optionally `DEPLOY_PROFILE=https`) from a `.deploy-env` file, and needs `sshpass` locally. `scripts/logs.sh` tails the remote logs with the same credentials.
+
+#### running without docker
+
 The project is written in TypeScript and requires **Node.js 24 or newer** (it uses the built-in `node:sqlite` module, which is stable as of Node 24). `npm start` compiles the TypeScript to `dist/` (via the `prestart` build step) and then runs the compiled server.
 
 ```
@@ -63,13 +108,7 @@ For local development with auto-reload (runs the TypeScript directly via `tsx`):
 npm run dev
 ```
 
-#### getting started with docker
-
-```
-sudo apt install docker.io
-git clone https://github.com/pkcprotocol/pkc-http-router.git && cd pkc-http-router
-scripts/start-docker.sh
-```
+`scripts/start-docker.sh` is a third option: a single `docker run` off the stock `node:24` image with the repo bind mounted, no image build.
 
 #### test
 

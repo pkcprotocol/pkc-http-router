@@ -10,6 +10,9 @@ dist/
 .deploy-env*
 ipfs
 .ipfs
+/letsencrypt/
+/cloudflare/
+/nginx/
 express-gen-ts
-data
+/data
 TODO.md

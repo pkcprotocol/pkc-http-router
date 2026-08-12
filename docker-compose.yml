@@ -1,0 +1,150 @@
+# pkc-http-router
+#
+#   http only:   cp .env.example .env && docker compose up -d
+#   with https:  docker compose --profile https up -d
+#
+# the https profile needs DOMAIN, CERT_EMAIL and CLOUDFLARE_API_TOKEN set in .env.
+# it issues a let's encrypt cert over the cloudflare dns-01 challenge (no port 80
+# challenge, so the domain does not have to be reachable while issuing) and serves
+# 443 through nginx in front of the router.
+
+services:
+  router:
+    build: .
+    image: pkc-http-router
+    container_name: pkc-http-router
+    restart: always
+    # ${HTTP_PORT} on the host -> 3000 in the container. set HTTP_BIND_IP to 127.0.0.1
+    # when something else terminates tls in front of it (nginx, a cloudflare tunnel),
+    # so the plain http port is not reachable from the internet
+    ports:
+      - '${HTTP_BIND_IP:-0.0.0.0}:${HTTP_PORT:-80}:3000'
+    environment:
+      # PORT is fixed to 3000 inside the container, change HTTP_PORT to move the host port
+      PORT: 3000
+      DEBUG: ${DEBUG-}
+      NO_IP_VALIDATE: ${NO_IP_VALIDATE-}
+      LOG_KEY: ${LOG_KEY-}
+    # --log-key is a cli flag, only pass it when LOG_KEY is set
+    command: >
+      sh -c 'exec node ./dist/bin/www.js $${LOG_KEY:+--log-key "$$LOG_KEY"}'
+    volumes:
+      # database.sqlite, so providers survive a container recreate
+      - ./data:/app/data
+      # only written when LOG_KEY is set
+      - ./log:/app/log
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3000/').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+
+  # issues the cert on first start, then checks for renewal once a day
+  certbot:
+    profiles: ['https']
+    image: certbot/dns-cloudflare:v2.11.0
+    container_name: pkc-http-router-certbot
+    restart: always
+    environment:
+      DOMAIN: ${DOMAIN-}
+      CERT_EMAIL: ${CERT_EMAIL-}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN-}
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -e
+        # checked here rather than with compose's required-variable syntax, which would
+        # also fail the default http-only run, where these are legitimately unset
+        missing=
+        if [ -z "$$DOMAIN" ]; then missing="$$missing DOMAIN"; fi
+        if [ -z "$$CERT_EMAIL" ]; then missing="$$missing CERT_EMAIL"; fi
+        if [ -z "$$CLOUDFLARE_API_TOKEN" ]; then missing="$$missing CLOUDFLARE_API_TOKEN"; fi
+        if [ -n "$$missing" ]; then
+          echo "not set in .env, required by the https profile:$$missing" >&2
+          exit 1
+        fi
+        # the api token file has to be 600 or certbot refuses to use it
+        umask 077
+        mkdir -p /cloudflare
+        printf 'dns_cloudflare_api_token = %s\n' "$$CLOUDFLARE_API_TOKEN" > /cloudflare/cloudflare.ini
+        # --keep-until-expiring makes this a no-op when a valid cert is already there
+        certbot certonly \
+          --dns-cloudflare \
+          --dns-cloudflare-credentials /cloudflare/cloudflare.ini \
+          --dns-cloudflare-propagation-seconds 60 \
+          --preferred-challenges dns-01 \
+          --server https://acme-v02.api.letsencrypt.org/directory \
+          -d "$$DOMAIN" \
+          --email "$$CERT_EMAIL" \
+          --agree-tos \
+          --non-interactive \
+          --keep-until-expiring
+        while :; do
+          echo "checking for certificate renewal..."
+          certbot renew
+          echo "renewal check completed on $$(date), sleeping for 1 day..."
+          sleep 86400
+        done
+    volumes:
+      - ./letsencrypt:/etc/letsencrypt
+      - ./cloudflare:/cloudflare
+    # nginx waits on this, it cannot start before the cert exists
+    healthcheck:
+      test: ['CMD-SHELL', 'test -f /etc/letsencrypt/live/$${DOMAIN}/fullchain.pem']
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+
+  nginx:
+    profiles: ['https']
+    image: nginx:1.27.1
+    container_name: pkc-http-router-nginx
+    restart: always
+    ports:
+      - '${HTTPS_PORT:-443}:443'
+    environment:
+      DOMAIN: ${DOMAIN-}
+      # only substitute ${DOMAIN} in the template, leave $host, $scheme etc. to nginx
+      NGINX_ENVSUBST_FILTER: '^DOMAIN$$'
+    volumes:
+      - ./docker/nginx/templates:/etc/nginx/templates:ro
+      - ./letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      certbot:
+        condition: service_healthy
+      router:
+        condition: service_started
+    # nginx does not notice a renewed cert on its own, so reload it whenever the
+    # contents of /etc/letsencrypt change. abusing the healthcheck keeps the default
+    # nginx command intact, which is what renders the config template on start.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - |
+          CERT_DIR=/etc/letsencrypt
+          STATE_FILE=/tmp/cert.checksum
+          [ -d "$$CERT_DIR/live" ] || exit 0
+          NEW_SUM="$$(find "$$CERT_DIR" \( -type f -o -type l \) -exec stat -c '%n %s %Y' {} \; 2>/dev/null | sort | sha256sum | cut -d' ' -f1)"
+          OLD_SUM="$$(cat "$$STATE_FILE" 2>/dev/null || echo)"
+          if [ "$$NEW_SUM" != "$$OLD_SUM" ]; then nginx -s reload && echo "$$NEW_SUM" > "$$STATE_FILE"; fi
+          exit 0
+      interval: 30s
+      timeout: 10s
+      retries: 1
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'

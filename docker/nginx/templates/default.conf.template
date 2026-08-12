@@ -1,0 +1,39 @@
+# rendered by the nginx image entrypoint: ${DOMAIN} is substituted from the env,
+# every other $variable is left alone (see NGINX_ENVSUBST_FILTER in docker-compose.yml)
+
+# remove nginx header
+server_tokens off;
+
+# proxy https with http2 to the router container
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+
+    server_name ${DOMAIN};
+
+    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    # advertise http3 / quic
+    add_header Alt-Svc 'h3-23=":443"';
+
+    # docker's embedded dns. resolving the upstream through a variable means nginx
+    # re-resolves it instead of caching the router container's ip at startup, so a
+    # restarted router does not turn into a permanent 502
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    location / {
+        set $upstream http://router:3000;
+        proxy_pass $upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # fix pubsub http2 issue
+        proxy_buffering off;
+    }
+}
