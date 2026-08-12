@@ -198,7 +198,9 @@ describe('legacy providers table migration', () => {
     expect(store.get(cids[2])!.providers['peer3'].provider.Addrs).toEqual(['/ip4/2.2.2.2/tcp/4001'])
   })
 
-  it('vacuum during migration shrinks the file to the normalized size', () => {
+  // 2000 legacy rows plus a vacuum takes ~1s on a fast ssd but ~15s on ci runners,
+  // which timed out the 5s vitest default and failed a release
+  it('vacuum during migration shrinks the file to the normalized size', {timeout: 60_000}, () => {
     const file = tmpDbFile()
     const legacyDb = createLegacyDb(file)
     // one heavy peer record duplicated into many cid rows, like production. the keys
