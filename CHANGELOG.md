@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.4](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.3...v0.0.4) (2026-08-12)
+
+### Features
+
+* **ci:** build and publish the docker image from ci ([b19cf5c](https://github.com/pkcprotocol/pkc-http-router/commit/b19cf5c6935580b9a77f2f94b52f6cee72dd0c98))
+* **docker:** add docker compose setup with optional https profile ([f90eb88](https://github.com/pkcprotocol/pkc-http-router/commit/f90eb8883ea171ee66f0481f5e1f1c82467378fd))
+
 ## [0.0.3](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.2...v0.0.3) (2026-07-14)
 
 ### Bug Fixes
