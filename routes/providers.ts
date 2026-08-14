@@ -2,8 +2,10 @@ import express, {type Request, type Response} from 'express'
 import Debug from 'debug'
 import database from '../lib/database.js'
 import {cleanAddrs, logPostProviders, normalizeCid} from '../lib/utils.js'
+import {extractRawPayloads} from '../lib/raw-json.js'
+import {verificationEnabled, verifyProvider} from '../lib/signature.js'
 import prometheus from '../lib/prometheus.js'
-import type {Provider} from '../lib/types.js'
+import type {Provider, RawBodyRequest} from '../lib/types.js'
 
 const router = express.Router()
 const debug = Debug('pkc-http-router:routes:providers')
@@ -31,6 +33,29 @@ router.put('/', async (req: Request, res: Response) => {
   if (!Array.isArray(body?.Providers)) {
     res.status(400).set('Content-Type', 'application/json').send({Error: 'invalid body, expected {"Providers": [...]}'})
     return
+  }
+  for (const provider of body.Providers) {
+    if (!provider || typeof provider !== 'object' || !provider.Payload || typeof provider.Payload !== 'object') {
+      res.status(400).set('Content-Type', 'application/json').send({Error: 'invalid provider, expected {"Payload": {...}}'})
+      return
+    }
+  }
+
+  // verify signatures before anything is stored: without this, anyone can publish addrs
+  // under someone else's peer id and keep that peer unreachable, see lib/signature.ts.
+  // unlike the reference server, which stops at the first failing record and keeps the
+  // ones it already stored, the whole request is rejected and nothing is stored
+  if (verificationEnabled()) {
+    const rawPayloads = extractRawPayloads((req as RawBodyRequest).rawBody ?? Buffer.alloc(0))
+    for (const [index, provider] of body.Providers.entries()) {
+      const {valid, reason, error} = verifyProvider(provider, rawPayloads[index])
+      if (!valid) {
+        prometheus.postProvidersRejected(reason ?? 'unknown')
+        debug('rejected provider', provider.Payload?.ID, reason, error)
+        res.status(403).set('Content-Type', 'application/json').send({Error: `record verification failed: ${error}`})
+        return
+      }
+    }
   }
 
   // validate ip before adding to db

@@ -7,6 +7,7 @@ import type {IncomingMessage} from 'node:http'
 import logger from 'morgan'
 import cors from 'cors'
 import Debug from 'debug'
+import type {RawBodyRequest} from './lib/types.js'
 import indexRouter from './routes/index.js'
 import providersRouter from './routes/providers.js'
 import prometheusRouter from './routes/prometheus.js'
@@ -33,7 +34,12 @@ if (debug.enabled) {
 app.use(express.json({
   limit: '1mb',
   // TODO: kubo doesn't always include content-type header, remove after delegated routing spec
-  type: (req: IncomingMessage) => req.method === 'POST' || req.method === 'PUT'
+  type: (req: IncomingMessage) => req.method === 'POST' || req.method === 'PUT',
+  // an ipip-0526 signature covers the Payload bytes exactly as they appear in the request
+  // body, which can't be recovered from the parsed object, so keep the raw body around
+  verify: (req: IncomingMessage, res: unknown, buf: Buffer) => {
+    (req as RawBodyRequest).rawBody = buf
+  }
 }))
 // TODO: figure out why did I comment this out?
 // app.use(express.urlencoded({ extended: false }))

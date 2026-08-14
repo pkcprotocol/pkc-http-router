@@ -6,13 +6,32 @@ An IPFS [delegated routing v1](https://specs.ipfs.tech/routing/http-routing-v1/)
 
 The server exposes the `/routing/v1/providers/` HTTP API and keeps a SQLite store of which peers provide which CIDs.
 
-- **`PUT /routing/v1/providers/`** — a peer announces that it provides one or more CIDs (`routes/providers.ts`). The server validates and cleans the peer's announced multiaddrs against the request IP (`cleanAddrs` in `lib/utils.ts`, which fixes kubo's `0.0.0.0` self-reporting and drops mismatched ip4/ip6 addrs), then stores the providers keyed by CID (`lib/database.ts`). CIDs are normalized to a single version/codec/encoding (`normalizeCid`) so the same content always maps to one key.
+- **`PUT /routing/v1/providers/`** — a peer announces that it provides one or more CIDs (`routes/providers.ts`). The server verifies each record's signature (see below), then validates and cleans the peer's announced multiaddrs against the request IP (`cleanAddrs` in `lib/utils.ts`, which fixes kubo's `0.0.0.0` self-reporting and drops mismatched ip4/ip6 addrs), then stores the providers keyed by CID (`lib/database.ts`). CIDs are normalized to a single version/codec/encoding (`normalizeCid`) so the same content always maps to one key.
 - **`GET /routing/v1/providers/:cid`** — returns up to 100 providers for a CID, randomized like a BitTorrent tracker response so peers spread their connections. Returns `404` with a short `max-age` when there are no providers, and sets `Cache-Control`/`Last-Modified` headers (with `stale-if-error` so cached results survive a 24h outage).
 
 Storage details (`lib/database.ts`):
 - Providers are stored in SQLite via the built-in [`node:sqlite`](https://nodejs.org/api/sqlite.html) module (no native dependencies). Values are JSON serialized and keyed by normalized CID in `data/database.sqlite` (created on first write).
 - Each provider entry has a `lastModified` timestamp and expires after 24h (`ttl`). Expired entries are pruned lazily on read and write, so the DB is self-cleaning.
 - Writes to the same CID are serialized with a per-CID pending lock to avoid losing concurrent announces.
+
+#### signature verification
+
+Every announced record must be signed by the peer it claims to be, as specified in [IPIP-0526](https://github.com/ipfs/specs/blob/4d13666f1d2915e03e6f8f8f86a710779e826e8a/src/ipips/ipip-0526.md) (`lib/signature.ts`). Without it anyone can publish addrs under someone else's peer ID: a peer's addrs are stored once and shared by every CID it announces, so a single forged record makes that peer undialable for everyone until it re-announces — and the attacker can keep re-forging. The request-IP check does not help there, the attacker announces its own IP and only lies about the peer ID.
+
+What is checked, in order, before anything is stored:
+
+1. The record has a `Signature` and a `Payload.ID`.
+2. The public key is extracted from `Payload.ID`. Only Ed25519 and Secp256k1 peer IDs carry their key (identity multihash); RSA and ECDSA peer IDs are only a hash of it and can never be verified, per IPIP-0526. Both the Base58btc (`12D3Koo…`) and the CIDv1 libp2p-key (`bafz…`) form of a peer ID are accepted.
+3. The `Signature` (any multibase encoding, kubo uses base64 `m`) is verified against the SHA-256 digest of the **raw `Payload` bytes as they appear in the request body**. The parsed JSON object is not re-serialized to check the signature, because a client is free to serialize its payload any way it likes as long as it signs what it sends (`lib/raw-json.ts` locates the exact bytes in the body).
+4. `Payload.Timestamp` must be no more than 24h old and no more than 1h in the future. A signature never expires on its own, so without this an attacker who captured a peer's older record could replay it to pin that peer's stale addrs back on.
+
+A request where any record fails is rejected with `403` and **nothing** from it is stored, not even the records that verified (the reference server in boxo is non-atomic here, this one is not). Rejections are counted per reason in the `ipfs_tracker_post_providers_rejected_count` Prometheus metric.
+
+Verification can be turned off with `VERIFY_SIGNATURES=0`, which also makes `Signature` optional again. That is only safe when the router does not accept announcements from untrusted parties — same machine, private network — or as an incident kill switch.
+
+Note that a valid signature only proves the record was made by the peer it names. It does not prove the peer actually has the content: any peer can still announce any CID under its own ID.
+
+Verification happens before `cleanAddrs`, so the addrs that end up stored can differ from the signed ones (kubo's `0.0.0.0` is rewritten to the request IP, mismatched addrs are dropped). That is fine here because the signed record is never re-served: `GET /routing/v1/providers/:cid` answers with unsigned `peer` schema records.
 
 Other endpoints:
 - **`GET /`** — health/welcome message (`routes/index.ts`).
@@ -31,6 +50,7 @@ Environment variables:
 | `PORT` | `3000` | HTTP port the server listens on (`bin/www.ts`). |
 | `DEBUG` | _unset_ | Debug namespace filter. Set to `pkc-http-router:*` to enable debug logs and morgan HTTP request logging (stdout). Sub-namespaces: `pkc-http-router:server`, `pkc-http-router:routes:providers`. |
 | `NO_IP_VALIDATE` | _unset_ | When set, skips multiaddr/IP validation in `cleanAddrs` (`lib/utils.ts`). Intended for testing only. |
+| `VERIFY_SIGNATURES` | _unset_ (on) | Set to `0` to accept records without checking their IPIP-0526 signature. Only for trusted-client deployments, see [signature verification](#signature-verification). |
 
 CLI flags (passed after `npm start --`, e.g. `npm start -- --log-key mylog`):
 

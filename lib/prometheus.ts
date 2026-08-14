@@ -42,6 +42,11 @@ const counters = {
     name: `${prefix}post_providers_provider_count`,
     help: `count of ipfs tracker post providers provider amount labeled with: ${counterLabelNames.join(', ')}`,
     labelNames: counterLabelNames, registers: [promClient.register]
+  }),
+  postProvidersRejectedCount: new promClient.Counter({
+    name: `${prefix}post_providers_rejected_count`,
+    help: 'count of ipfs tracker post providers requests rejected by signature verification labeled with: reason',
+    labelNames: ['reason'], registers: [promClient.register]
   })
 }
 
@@ -69,5 +74,9 @@ const postProvidersProviders = (providers?: {length?: number}): void => {
   }
 }
 
-const prometheus = {promClient, prefix, getProviders, postProviders, getProvidersSuccess, postProvidersSuccess, getProvidersProviders, postProvidersProviders}
+const postProvidersRejected = (reason: string): void => {
+  counters.postProvidersRejectedCount.inc({reason}, 1)
+}
+
+const prometheus = {promClient, prefix, getProviders, postProviders, getProvidersSuccess, postProvidersSuccess, getProvidersProviders, postProvidersProviders, postProvidersRejected}
 export default prometheus

@@ -27,6 +27,7 @@ services:
       PORT: 3000
       DEBUG: ${DEBUG-}
       NO_IP_VALIDATE: ${NO_IP_VALIDATE-}
+      VERIFY_SIGNATURES: ${VERIFY_SIGNATURES-}
       LOG_KEY: ${LOG_KEY-}
     # --log-key is a cli flag, only pass it when LOG_KEY is set
     command: >

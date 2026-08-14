@@ -88,12 +88,32 @@ jobs:
       - name: Announce a provider and read it back
         run: |
           CID=QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG
-          PEER=12D3KooWQYV9dGMFoRzNStwpXztXaBUjtPqi6aU76ZgUriHhKust
+          # throwaway ed25519 key generated for this smoke test, its peer id is the
+          # base58btc identity multihash of the matching libp2p public key protobuf
+          PEER=12D3KooWQwhnVwLvzdNAEQ3Wec19PBXm6wAdr65oMsF7PA7oq6Xm
+          PRIVATE_KEY=MC4CAQAwBQYDK2VwBCIEIFa7f3E/4jvhbzBO+08V3cuWe780+qGXtIIpLgS8d9oD
+
+          # records must carry a valid ipip-0526 signature over the payload bytes as sent,
+          # so sign them here instead of hardcoding a body
+          BODY=$(CID="$CID" PEER="$PEER" PRIVATE_KEY="$PRIVATE_KEY" node -e '
+            const crypto = require("node:crypto")
+            const payload = JSON.stringify({
+              Keys: [process.env.CID],
+              Timestamp: Date.now(),
+              AdvisoryTTL: 86400000000000,
+              ID: process.env.PEER,
+              Addrs: ["/ip4/1.2.3.4/tcp/4001"]
+            })
+            const privateKey = crypto.createPrivateKey({key: Buffer.from(process.env.PRIVATE_KEY, "base64"), format: "der", type: "pkcs8"})
+            const digest = crypto.createHash("sha256").update(Buffer.from(payload, "utf8")).digest()
+            const signature = "m" + crypto.sign(null, digest, privateKey).toString("base64").replace(/=+$/, "")
+            process.stdout.write(`{"Providers":[{"Schema":"bitswap","Protocol":"transport-bitswap","Signature":"${signature}","Payload":${payload}}]}`)
+          ')
 
           code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
             http://127.0.0.1:8099/routing/v1/providers/ \
             -H 'content-type: application/json' \
-            -d "{\"Providers\":[{\"Schema\":\"announce\",\"Protocol\":\"transport-bitswap\",\"Signature\":\"x\",\"Payload\":{\"Keys\":[\"$CID\"],\"Timestamp\":\"2026-01-01T00:00:00Z\",\"AdvisoryTTL\":\"24h0m0s\",\"ID\":\"$PEER\",\"Addrs\":[\"/ip4/1.2.3.4/tcp/4001\"]}}]}")
+            -d "$BODY")
           if [ "$code" != "200" ]; then
             echo "FAIL: PUT /routing/v1/providers/ returned $code, expected 200"
             exit 1
@@ -106,6 +126,26 @@ jobs:
             exit 1
           fi
           echo "provider roundtrip ok"
+
+          # the same record with its signature stripped must be refused
+          UNSIGNED=$(echo "$BODY" | node -e '
+            let raw = ""
+            process.stdin.on("data", (chunk) => {raw += chunk})
+            process.stdin.on("end", () => {
+              const body = JSON.parse(raw)
+              delete body.Providers[0].Signature
+              process.stdout.write(JSON.stringify(body))
+            })
+          ')
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+            http://127.0.0.1:8099/routing/v1/providers/ \
+            -H 'content-type: application/json' \
+            -d "$UNSIGNED")
+          if [ "$code" != "403" ]; then
+            echo "FAIL: unsigned PUT /routing/v1/providers/ returned $code, expected 403"
+            exit 1
+          fi
+          echo "unsigned announce refused"
 
       - name: Check the database was written to the mounted volume
         run: |

@@ -301,8 +301,7 @@ const addProviders = async (providers: Provider[]): Promise<void> => {
 
   const cids: Record<string, Provider[]> = {}
   for (const provider of providers) {
-    // TODO: when deletated routing post spec is finalized, verify signature here
-
+    // signatures are verified in routes/providers.ts, before anything gets here
     for (const key of removeDuplicates(provider.Payload.Keys || [])) {
       // always use the same cid version/codex/encoding
       const cid = normalizeCid(key)

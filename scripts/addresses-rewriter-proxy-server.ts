@@ -1,3 +1,8 @@
+// DEPRECATED: this proxy rewrites Payload.Addrs after kubo has signed the record, so the
+// signature no longer matches the payload and the router now rejects those records with
+// 403. kubo 0.43.0 keeps browser-dialable transports in records PUT to http routers
+// (ipfs/kubo#11394), which is what this worked around, and pkc-js removed its copy in
+// pkcprotocol/pkc-js#263. don't put it back in front of the router.
 import http, {type IncomingMessage, type ServerResponse} from 'node:http'
 import https from 'node:https'
 import {inspect} from 'node:util'

@@ -1,32 +1,31 @@
 import {describe, it, expect, beforeAll, afterAll} from 'vitest'
 import database from '../../lib/database.js'
 import {request, closeServer} from '../helpers/request.js'
+import {createTestPeer, signedBodyJson} from '../helpers/sign.js'
 
 const mockIp = '123.123.123.123'
 
-const body = {
-  Providers: [
-    {
-      Schema: 'bitswap',
-      Protocol: 'transport-bitswap',
-      Signature: 'mx5kamm5kzxuCnVJtX3K9DEj8gKlFqXil2x/M8zDTozvzowTY6W+HOALQ2LCkTZCEz4H5qizpnHxPM/rVQ7MNBg',
-      Payload: {
-        Keys: [
-          'bafkreigur6gzxm3ykiol7ywou3iy3obruzs2q7boizj7oznznid34dzc3e',
-          'bafkreigur6gzxm3ykiol7ywou3iy3obruzs2q7boizj7oznznid34dzc3e'
-        ],
-        Timestamp: 1725833163372,
-        AdvisoryTTL: 86400000000000,
-        ID: '12D3KooWEdCRaQTjjgbtBoSMhnguznp7GHhsin8eRDEtgEso6Z1B',
-        Addrs: [
-          `/ip4/${mockIp}/tcp/4001`,
-          `/ip4/${mockIp}/udp/4001/quic-v1`,
-          `/ip4/${mockIp}/udp/4001/quic-v1/webtransport`,
-        ]
-      }
-    }
+const peer = createTestPeer()
+
+// records are signed over the payload bytes as sent (ipip-0526), so tests build a payload
+// object and let the helper serialize and sign it, instead of sharing one request body
+const createPayload = (): {Keys: string[]; Timestamp: number; AdvisoryTTL: number; ID: string; Addrs: string[]} => ({
+  Keys: [
+    'bafkreigur6gzxm3ykiol7ywou3iy3obruzs2q7boizj7oznznid34dzc3e',
+    'bafkreigur6gzxm3ykiol7ywou3iy3obruzs2q7boizj7oznznid34dzc3e'
+  ],
+  Timestamp: Date.now(),
+  AdvisoryTTL: 86400000000000,
+  ID: peer.peerId,
+  Addrs: [
+    `/ip4/${mockIp}/tcp/4001`,
+    `/ip4/${mockIp}/udp/4001/quic-v1`,
+    `/ip4/${mockIp}/udp/4001/quic-v1/webtransport`,
   ]
-}
+})
+
+const payload = createPayload()
+const body = signedBodyJson(peer, payload)
 
 // used to mock the ip address (trust proxy is enabled)
 const headers = {
@@ -71,7 +70,7 @@ describe('routes providers', () => {
       expect(res.headers['content-type']?.includes('json')).toBe(true)
     })
     it('database should have provider', async () => {
-      const {providers} = await database.getProviders(body.Providers[0].Payload.Keys[0])
+      const {providers} = await database.getProviders(payload.Keys[0])
       expect(providers.length).toBe(1)
     })
   })
@@ -86,10 +85,10 @@ describe('routes providers', () => {
       `/ip4/8.8.8.8/tcp/4001`,
       `/ip4/9.9.9.9/tcp/4001`,
     ]
-    const bodyWithBadIps = JSON.parse(JSON.stringify(body))
-    bodyWithBadIps.Providers[0].Payload.Addrs.push(...badIps)
+    const payloadWithBadIps = createPayload()
+    payloadWithBadIps.Addrs.push(...badIps)
     beforeAll(async () => {
-      res = await request('PUT', '/routing/v1/providers/', {headers, body: bodyWithBadIps})
+      res = await request('PUT', '/routing/v1/providers/', {headers, body: signedBodyJson(peer, payloadWithBadIps)})
     })
     afterAll(() => {
       database.clear()
@@ -98,11 +97,11 @@ describe('routes providers', () => {
       expect(res.status).toBe(200)
     })
     it('database should have provider but not with bad ips', async () => {
-      const {providers} = await database.getProviders(body.Providers[0].Payload.Keys[0])
+      const {providers} = await database.getProviders(payload.Keys[0])
       expect(providers.length).toBe(1)
       expect(providers[0].Addrs.length).toBeGreaterThan(0)
       // TODO: uncomment this after we no longer transform 0.0.0.0 into req.ip
-      expect(providers[0].Addrs.length).toBe(body.Providers[0].Payload.Addrs.length)
+      expect(providers[0].Addrs.length).toBe(payload.Addrs.length)
       for (const badIp of badIps) {
         expect(providers[0].Addrs.includes(badIp)).toBe(false)
       }
@@ -111,10 +110,10 @@ describe('routes providers', () => {
 
   describe('PUT /routing/v1/providers/ with no addresses', () => {
     let res: Awaited<ReturnType<typeof request>>
-    const bodyWithNoAddresses = JSON.parse(JSON.stringify(body))
-    bodyWithNoAddresses.Providers[0].Payload.Addrs = []
+    const payloadWithNoAddresses = createPayload()
+    payloadWithNoAddresses.Addrs = []
     beforeAll(async () => {
-      res = await request('PUT', '/routing/v1/providers/', {headers, body: bodyWithNoAddresses})
+      res = await request('PUT', '/routing/v1/providers/', {headers, body: signedBodyJson(peer, payloadWithNoAddresses)})
     })
     afterAll(() => {
       database.clear()
@@ -123,7 +122,7 @@ describe('routes providers', () => {
       expect(res.status).toBe(200)
     })
     it('database should not have provider', async () => {
-      const {providers} = await database.getProviders(body.Providers[0].Payload.Keys[0])
+      const {providers} = await database.getProviders(payload.Keys[0])
       expect(providers.length).toBe(0)
     })
   })
@@ -132,7 +131,7 @@ describe('routes providers', () => {
     let res: Awaited<ReturnType<typeof request>>
     beforeAll(async () => {
       await request('PUT', '/routing/v1/providers/', {headers, body})
-      res = await request('GET', `/routing/v1/providers/${body.Providers[0].Payload.Keys[0]}`, {headers})
+      res = await request('GET', `/routing/v1/providers/${payload.Keys[0]}`, {headers})
     })
     afterAll(() => {
       database.clear()
@@ -151,9 +150,9 @@ describe('routes providers', () => {
     })
     it('should contain provider', () => {
       expect(res.body.Providers[0].Schema).toBe('peer')
-      expect(res.body.Providers[0].ID).toBe(body.Providers[0].Payload.ID)
-      expect(res.body.Providers[0].Protocols[0]).toBe(body.Providers[0].Protocol)
-      expect(res.body.Providers[0].Addrs).toEqual(body.Providers[0].Payload.Addrs)
+      expect(res.body.Providers[0].ID).toBe(payload.ID)
+      expect(res.body.Providers[0].Protocols[0]).toBe('transport-bitswap')
+      expect(res.body.Providers[0].Addrs).toEqual(payload.Addrs)
     })
   })
 
@@ -183,30 +182,12 @@ describe('routes providers', () => {
   describe('PUT /routing/v1/providers/ dag-pb codec, GET /routing/v1/providers/ raw codec', () => {
     const dagPbCodecCid = 'QmSf6sTLvGrCzpLcqdRLy8xUmLUhgdyAQi1VaFy7Aa2VHW'
     const rawCodecCid = 'bafkreicafdegmgvhbsc4z4whwcz3wjdoeu3jpcuy2mfckqtq5dikjelzau'
-    const dagPbBody = {
-      Providers: [
-        {
-          Schema: 'bitswap',
-          Protocol: 'transport-bitswap',
-          Signature: 'mx5kamm5kzxuCnVJtX3K9DEj8gKlFqXil2x/M8zDTozvzowTY6W+HOALQ2LCkTZCEz4H5qizpnHxPM/rVQ7MNBg',
-          Payload: {
-            Keys: [dagPbCodecCid],
-            Timestamp: 1725833163372,
-            AdvisoryTTL: 86400000000000,
-            ID: '12D3KooWEdCRaQTjjgbtBoSMhnguznp7GHhsin8eRDEtgEso6Z1B',
-            Addrs: [
-              `/ip4/${mockIp}/tcp/4001`,
-              `/ip4/${mockIp}/udp/4001/quic-v1`,
-              `/ip4/${mockIp}/udp/4001/quic-v1/webtransport`,
-            ]
-          }
-        }
-      ]
-    }
+    const dagPbPayload = createPayload()
+    dagPbPayload.Keys = [dagPbCodecCid]
     let dagPbCodecCidRes: Awaited<ReturnType<typeof request>>
     let rawCodecCidRes: Awaited<ReturnType<typeof request>>
     beforeAll(async () => {
-      await request('PUT', '/routing/v1/providers/', {headers, body: dagPbBody})
+      await request('PUT', '/routing/v1/providers/', {headers, body: signedBodyJson(peer, dagPbPayload)})
       dagPbCodecCidRes = await request('GET', `/routing/v1/providers/${dagPbCodecCid}`, {headers})
       rawCodecCidRes = await request('GET', `/routing/v1/providers/${rawCodecCid}`, {headers})
     })
@@ -220,9 +201,9 @@ describe('routes providers', () => {
     it('dag-pb codec cid res should have provider', () => {
       expect(dagPbCodecCidRes.status).toBe(200)
       expect(dagPbCodecCidRes.body.Providers[0].Schema).toBe('peer')
-      expect(dagPbCodecCidRes.body.Providers[0].ID).toBe(dagPbBody.Providers[0].Payload.ID)
-      expect(dagPbCodecCidRes.body.Providers[0].Protocols[0]).toBe(dagPbBody.Providers[0].Protocol)
-      expect(dagPbCodecCidRes.body.Providers[0].Addrs).toEqual(dagPbBody.Providers[0].Payload.Addrs)
+      expect(dagPbCodecCidRes.body.Providers[0].ID).toBe(dagPbPayload.ID)
+      expect(dagPbCodecCidRes.body.Providers[0].Protocols[0]).toBe('transport-bitswap')
+      expect(dagPbCodecCidRes.body.Providers[0].Addrs).toEqual(dagPbPayload.Addrs)
     })
     it('database should have provider for raw codec cid', async () => {
       const {providers} = await database.getProviders(rawCodecCid)
@@ -231,9 +212,9 @@ describe('routes providers', () => {
     it('raw codec cid res should have provider', () => {
       expect(rawCodecCidRes.status).toBe(200)
       expect(rawCodecCidRes.body.Providers[0].Schema).toBe('peer')
-      expect(rawCodecCidRes.body.Providers[0].ID).toBe(dagPbBody.Providers[0].Payload.ID)
-      expect(rawCodecCidRes.body.Providers[0].Protocols[0]).toBe(dagPbBody.Providers[0].Protocol)
-      expect(rawCodecCidRes.body.Providers[0].Addrs).toEqual(dagPbBody.Providers[0].Payload.Addrs)
+      expect(rawCodecCidRes.body.Providers[0].ID).toBe(dagPbPayload.ID)
+      expect(rawCodecCidRes.body.Providers[0].Protocols[0]).toBe('transport-bitswap')
+      expect(rawCodecCidRes.body.Providers[0].Addrs).toEqual(dagPbPayload.Addrs)
     })
   })
 
@@ -262,9 +243,9 @@ describe('routes providers', () => {
     })
 
     it('PUT with an unparseable key returns 400', async () => {
-      const badBody = JSON.parse(JSON.stringify(body))
-      badBody.Providers[0].Payload.Keys = ['not-a-cid']
-      const res = await request('PUT', '/routing/v1/providers/', {headers, body: badBody})
+      const badPayload = createPayload()
+      badPayload.Keys = ['not-a-cid']
+      const res = await request('PUT', '/routing/v1/providers/', {headers, body: signedBodyJson(peer, badPayload)})
       expect(res.status).toBe(400)
     })
   })
