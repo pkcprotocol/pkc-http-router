@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.0.6](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.5...v0.0.6) (2026-08-17)
+
+### Features
+
+* **providers:** verify ipip-0526 signatures on announced records ([4c56e88](https://github.com/pkcprotocol/pkc-http-router/commit/4c56e88a0b1bba65e246f1d05395e01743fb4982))
+
 ## [0.0.5](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.4...v0.0.5) (2026-08-12)
 
 ## [0.0.4](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.3...v0.0.4) (2026-08-12)
