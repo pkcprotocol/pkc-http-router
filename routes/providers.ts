@@ -3,7 +3,7 @@ import Debug from 'debug'
 import database from '../lib/database.js'
 import {cleanAddrs, logPostProviders, normalizeCid} from '../lib/utils.js'
 import {extractRawPayloads} from '../lib/raw-json.js'
-import {verificationEnabled, verifyProvider} from '../lib/signature.js'
+import {verifyProvider} from '../lib/signature.js'
 import prometheus from '../lib/prometheus.js'
 import type {Provider, RawBodyRequest} from '../lib/types.js'
 
@@ -43,18 +43,18 @@ router.put('/', async (req: Request, res: Response) => {
 
   // verify signatures before anything is stored: without this, anyone can publish addrs
   // under someone else's peer id and keep that peer unreachable, see lib/signature.ts.
-  // unlike the reference server, which stops at the first failing record and keeps the
-  // ones it already stored, the whole request is rejected and nothing is stored
-  if (verificationEnabled()) {
-    const rawPayloads = extractRawPayloads((req as RawBodyRequest).rawBody ?? Buffer.alloc(0))
-    for (const [index, provider] of body.Providers.entries()) {
-      const {valid, reason, error} = verifyProvider(provider, rawPayloads[index])
-      if (!valid) {
-        prometheus.postProvidersRejected(reason ?? 'unknown')
-        debug('rejected provider', provider.Payload?.ID, reason, error)
-        res.status(403).set('Content-Type', 'application/json').send({Error: `record verification failed: ${error}`})
-        return
-      }
+  // there is no way to turn this off: a router that accepts unsigned records offers that
+  // hijack to everyone who can reach it, and clients are entitled to assume every router
+  // verifies. unlike the reference server, which stops at the first failing record and
+  // keeps the ones it already stored, the whole request is rejected and nothing is stored
+  const rawPayloads = extractRawPayloads((req as RawBodyRequest).rawBody ?? Buffer.alloc(0))
+  for (const [index, provider] of body.Providers.entries()) {
+    const {valid, reason, error} = verifyProvider(provider, rawPayloads[index])
+    if (!valid) {
+      prometheus.postProvidersRejected(reason ?? 'unknown')
+      debug('rejected provider', provider.Payload?.ID, reason, error)
+      res.status(403).set('Content-Type', 'application/json').send({Error: `record verification failed: ${error}`})
+      return
     }
   }
 
