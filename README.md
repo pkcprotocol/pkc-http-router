@@ -27,7 +27,7 @@ What is checked, in order, before anything is stored:
 
 A request where any record fails is rejected with `403` and **nothing** from it is stored, not even the records that verified (the reference server in boxo is non-atomic here, this one is not). Rejections are counted per reason in the `ipfs_tracker_post_providers_rejected_count` Prometheus metric.
 
-Verification can be turned off with `VERIFY_SIGNATURES=0`, which also makes `Signature` optional again. That is only safe when the router does not accept announcements from untrusted parties — same machine, private network — or as an incident kill switch.
+There is no way to turn verification off. A router that accepts unsigned records offers the hijack above to anyone who can reach it, and clients are entitled to assume every router checks: an announcer that only works against a lenient router silently stops being findable the day that router is fixed.
 
 Note that a valid signature only proves the record was made by the peer it names. It does not prove the peer actually has the content: any peer can still announce any CID under its own ID.
 
@@ -50,7 +50,6 @@ Environment variables:
 | `PORT` | `3000` | HTTP port the server listens on (`bin/www.ts`). |
 | `DEBUG` | _unset_ | Debug namespace filter. Set to `pkc-http-router:*` to enable debug logs and morgan HTTP request logging (stdout). Sub-namespaces: `pkc-http-router:server`, `pkc-http-router:routes:providers`. |
 | `NO_IP_VALIDATE` | _unset_ | When set, skips multiaddr/IP validation in `cleanAddrs` (`lib/utils.ts`). Intended for testing only. |
-| `VERIFY_SIGNATURES` | _unset_ (on) | Set to `0` to accept records without checking their IPIP-0526 signature. Only for trusted-client deployments, see [signature verification](#signature-verification). |
 
 CLI flags (passed after `npm start --`, e.g. `npm start -- --log-key mylog`):
 

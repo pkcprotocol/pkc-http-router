@@ -214,7 +214,3 @@ export const verifyProvider = (provider: Provider, rawPayload: Buffer | undefine
   }
   return verifyTimestamp(provider, now)
 }
-
-// verification is on unless explicitly turned off, for deployments where the router only
-// accepts records from trusted clients (localhost, private network) or during an incident
-export const verificationEnabled = (): boolean => process.env.VERIFY_SIGNATURES !== '0'

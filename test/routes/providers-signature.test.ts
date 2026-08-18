@@ -203,23 +203,4 @@ describe('routes providers signature verification', () => {
       expect(res.status).toBe(403)
     })
   })
-
-  describe('VERIFY_SIGNATURES=0 kill switch', () => {
-    beforeAll(() => {
-      process.env.VERIFY_SIGNATURES = '0'
-    })
-    afterAll(() => {
-      delete process.env.VERIFY_SIGNATURES
-    })
-
-    it('accepts an unsigned record', async () => {
-      const res = await request('PUT', '/routing/v1/providers/', {
-        headers: headersFor(attackerIp),
-        body: signedBodyJson(attacker, payloadFor(victim.peerId, attackerIp), {signature: null})
-      })
-      expect(res.status).toBe(200)
-      const {providers} = await database.getProviders(cid)
-      expect(providers.length).toBe(1)
-    })
-  })
 })
