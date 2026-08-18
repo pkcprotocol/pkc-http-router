@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.0.7](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.6...v0.0.7) (2026-08-18)
+
+### Bug Fixes
+
+* always verify record signatures, drop the kill switch ([1305232](https://github.com/pkcprotocol/pkc-http-router/commit/1305232648f23f92bbe4a7b70d3032fbc6f4308a))
+
 ## [0.0.6](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.5...v0.0.6) (2026-08-17)
 
 ### Features
