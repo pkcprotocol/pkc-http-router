@@ -42,5 +42,13 @@
     "tsx": "4.22.4",
     "typescript": "7.0.2",
     "vitest": "4.1.12"
+  },
+  "overrides": {
+    "get-uri": {
+      "basic-ftp": "6.2.3"
+    },
+    "release-it": {
+      "undici": "6.29.1"
+    }
   }
 }
