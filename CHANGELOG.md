@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.0.9](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.8...v0.0.9) (2026-10-25)
+
+### Bug Fixes
+
+* **deps:** patch body-parser compressed-body DoS [skip github-alerts] ([9f63a7c](https://github.com/pkcprotocol/pkc-http-router/commit/9f63a7c5cf854214e61552045fcee7adfb23a310))
+
 ## [0.0.8](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.7...v0.0.8) (2026-10-18)
 
 ## [0.0.7](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.6...v0.0.7) (2026-08-18)
