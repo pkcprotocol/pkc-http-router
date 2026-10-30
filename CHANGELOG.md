@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.0.10](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.9...v0.0.10) (2026-10-30)
+
 ## [0.0.9](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.8...v0.0.9) (2026-10-25)
 
 ### Bug Fixes
