@@ -116,7 +116,7 @@ Without the profile flag only the router starts, so `docker compose up -d` stays
 
 ##### deploying to a server over ssh
 
-`scripts/deploy.sh` clones or pulls the repo on a remote host, copies the local `.env` over and runs `docker compose up -d --pull always`. It reads `DEPLOY_HOST`, `DEPLOY_USER` and `DEPLOY_PASSWORD` (and optionally `DEPLOY_PROFILE=https`) from a `.deploy-env` file, and needs `sshpass` locally. `scripts/logs.sh` tails the remote logs with the same credentials.
+`scripts/deploy.sh` clones or pulls the repo on a remote host, copies the local `.env` over and runs `docker compose up -d --pull always`. It reads `DEPLOY_HOST`, `DEPLOY_USER` and `DEPLOY_PASSWORD` (and optionally `DEPLOY_PROFILE=https`) from a `.deploy-env` file, and needs `sshpass` locally.
 
 #### running without docker
 
@@ -133,8 +133,6 @@ For local development with auto-reload (runs the TypeScript directly via `tsx`):
 ```
 npm run dev
 ```
-
-`scripts/start-docker.sh` is a third option: a single `docker run` off the stock `node:24` image with the repo bind mounted, no image build.
 
 #### test
 
