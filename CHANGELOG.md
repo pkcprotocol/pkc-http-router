@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.0.11](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.10...v0.0.11) (2026-11-08)
+
+### Bug Fixes
+
+* **providers:** drop unroutable addrs by default, replace NO_IP_VALIDATE with STRICT_IP_MATCH ([38063a0](https://github.com/pkcprotocol/pkc-http-router/commit/38063a0a5577539add682395d9fdfb73fa57e69f)), closes [#7](https://github.com/pkcprotocol/pkc-http-router/issues/7)
+
 ## [0.0.10](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.9...v0.0.10) (2026-10-30)
 
 ## [0.0.9](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.8...v0.0.9) (2026-10-25)
