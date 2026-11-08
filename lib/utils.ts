@@ -49,8 +49,13 @@ export const randomizeArray = <T>(array: T[]): T[] => {
 
 export const removeDuplicates = <T>(array: T[]): T[] => [...new Set(array)]
 
-// ranges that the legacy `ip` package treated as private (RFC1918, loopback, link-local, unique-local, unspecified)
-const privateIpRanges = new Set(['private', 'uniqueLocal', 'loopback', 'linkLocal', 'unspecified'])
+// special-purpose ranges nobody on the public internet can dial: private networks, loopback,
+// link-local, carrier-grade nat (which is also where tailscale addrs live), site-local (what
+// qemu user networking gives a guest), multicast/broadcast, and documentation, benchmarking or
+// identifier-only blocks. names are ipaddr.js range() names. not included: 6to4, teredo, nat64
+// and the anycast as112/amt blocks, those are reachable
+const unroutableIpv4Ranges = new Set(['unspecified', 'broadcast', 'multicast', 'linkLocal', 'loopback', 'carrierGradeNat', 'private', 'reserved'])
+const unroutableIpv6Ranges = new Set(['unspecified', 'linkLocal', 'multicast', 'loopback', 'uniqueLocal', 'deprecatedSiteLocal', 'discard', 'benchmarking', 'deprecatedOrchid', 'orchid2', 'droneRemoteIdProtocolEntityTags', 'segmentRouting', 'reserved'])
 
 const parseIp = (ip: string): ipaddr.IPv4 | ipaddr.IPv6 | undefined => {
   try {
@@ -66,12 +71,13 @@ const parseIp = (ip: string): ipaddr.IPv4 | ipaddr.IPv6 | undefined => {
   }
 }
 
-export const ipIsPrivate = (ip: string): boolean => {
+export const ipIsUnroutable = (ip: string): boolean => {
   const parsed = parseIp(ip)
   if (!parsed) {
     return false
   }
-  return privateIpRanges.has(parsed.range())
+  const ranges = parsed.kind() === 'ipv4' ? unroutableIpv4Ranges : unroutableIpv6Ranges
+  return ranges.has(parsed.range())
 }
 
 const ipIsUnspecified = (ip: string): boolean => parseIp(ip)?.range() === 'unspecified'
@@ -87,7 +93,36 @@ export const ipIsEqual = (a: string, b: string): boolean => {
   return bytesA.length === bytesB.length && bytesA.every((byte, i) => byte === bytesB[i])
 }
 
-export const cleanAddrs = (addrs: string[], reqIp: string): string[] => {
+export interface AddrFilterOptions {
+  // drop addrs whose ip (or p2p-circuit relay ip) is in an unroutable range
+  dropUnroutableAddrs: boolean
+  // drop non-circuit addrs whose ip differs from the request ip, and reject the request
+  // when an addr is not a valid multiaddr
+  strictIpMatch: boolean
+}
+
+const parseBooleanEnv = (name: string, defaultValue: boolean): boolean => {
+  const value = process.env[name]?.trim().toLowerCase()
+  if (!value) {
+    return defaultValue
+  }
+  if (['1', 'true', 'yes', 'on'].includes(value)) {
+    return true
+  }
+  if (['0', 'false', 'no', 'off'].includes(value)) {
+    return false
+  }
+  throw Error(`invalid ${name}='${process.env[name]}', expected true or false`)
+}
+
+// read on every call so the settings can't drift from the environment, app.ts also calls it
+// once at startup so a typo fails there instead of on every announce
+export const getAddrFilterOptions = (): AddrFilterOptions => ({
+  dropUnroutableAddrs: parseBooleanEnv('DROP_UNROUTABLE_ADDRS', true),
+  strictIpMatch: parseBooleanEnv('STRICT_IP_MATCH', false)
+})
+
+export const cleanAddrs = (addrs: string[], reqIp: string, options: AddrFilterOptions = getAddrFilterOptions()): string[] => {
   assert(reqIp && typeof reqIp === 'string', `cleanAddrs reqIp '${reqIp} not a string`)
   // remove nodejs prefix
   if (reqIp.startsWith('::ffff:')) {
@@ -111,33 +146,26 @@ export const cleanAddrs = (addrs: string[], reqIp: string): string[] => {
     return [`/ip${ipComponent[1]}/${reqIp}${addr.slice(ipComponent[0].length)}`]
   })
 
-  // useful for testing
-  if (process.env.NO_IP_VALIDATE) {
-    return [...addrs]
-  }
-
   const cleaned: string[] = []
   for (const addr of addrs) {
-    // validate multiaddr
-    multiaddr(addr)
+    if (options.strictIpMatch) {
+      // validate multiaddr
+      multiaddr(addr)
+    }
 
     const ip = addr.match(/^\/ip(?:4|6)\/([^/]+)/)?.[1]
     if (!ip) {
       // TODO: what to do if addr is dns or other, doesn't contain an ip that we can validate?
       // allow for now
+      cleaned.push(addr)
+      continue
     }
-    else if (!ipIsEqual(ip, reqIp)) {
-      // TODO: how to stop spam from p2p circuit addresses?
-      if (!addr.includes('p2p-circuit')) {
-        continue
-      }
-      // circuit addrs are exempt from the ip-equality check, but a private or unspecified
-      // relay ip is unreachable for everyone, don't store it
-      if (ipIsPrivate(ip)) {
-        continue
-      }
+    // also covers p2p-circuit addrs: a private relay ip is unreachable for everyone
+    if (options.dropUnroutableAddrs && ipIsUnroutable(ip)) {
+      continue
     }
-    else if (ipIsPrivate(ip)) {
+    // TODO: how to stop spam from p2p circuit addresses?
+    if (options.strictIpMatch && !ipIsEqual(ip, reqIp) && !addr.includes('p2p-circuit')) {
       continue
     }
     cleaned.push(addr)

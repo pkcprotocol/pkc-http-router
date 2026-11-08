@@ -18,7 +18,8 @@ router.put('/', async (req: Request, res: Response) => {
   prometheus.postProviders()
   logPostProviders(req)
 
-  // TODO: don't let people add ip addresses that aren't theirs, or peers without any Addrs, or private ips Addrs
+  // unroutable addrs are dropped and records left with no addrs aren't stored, see cleanAddrs.
+  // TODO: addrs that aren't the announcer's are only dropped with STRICT_IP_MATCH, see README.md
   /* TODO: once the POST spec is finalized, add interval and min interval to response, and remove peers after this time
     The Pirate Bay: Often uses an announce interval of 1800 seconds (30 minutes).
     1337x: May use similar intervals like 1800 seconds, with a minimum announce interval of around 300 seconds.

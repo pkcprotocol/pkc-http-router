@@ -26,7 +26,8 @@ services:
       # PORT is fixed to 3000 inside the container, change HTTP_PORT to move the host port
       PORT: 3000
       DEBUG: ${DEBUG-}
-      NO_IP_VALIDATE: ${NO_IP_VALIDATE-}
+      DROP_UNROUTABLE_ADDRS: ${DROP_UNROUTABLE_ADDRS-}
+      STRICT_IP_MATCH: ${STRICT_IP_MATCH-}
       LOG_KEY: ${LOG_KEY-}
     # --log-key is a cli flag, only pass it when LOG_KEY is set
     command: >

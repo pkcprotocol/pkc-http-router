@@ -75,7 +75,7 @@ describe('routes providers', () => {
     })
   })
 
-  describe('PUT /routing/v1/providers/ with non rep.iq ip addresses', () => {
+  describe('PUT /routing/v1/providers/ with non req.ip ip addresses and STRICT_IP_MATCH', () => {
     let res: Awaited<ReturnType<typeof request>>
     const badIps = [
       // local ips
@@ -88,9 +88,11 @@ describe('routes providers', () => {
     const payloadWithBadIps = createPayload()
     payloadWithBadIps.Addrs.push(...badIps)
     beforeAll(async () => {
+      process.env.STRICT_IP_MATCH = 'true'
       res = await request('PUT', '/routing/v1/providers/', {headers, body: signedBodyJson(peer, payloadWithBadIps)})
     })
     afterAll(() => {
+      delete process.env.STRICT_IP_MATCH
       database.clear()
     })
     it('should return status 200', () => {

@@ -6,7 +6,7 @@ An IPFS [delegated routing v1](https://specs.ipfs.tech/routing/http-routing-v1/)
 
 The server exposes the `/routing/v1/providers/` HTTP API and keeps a SQLite store of which peers provide which CIDs.
 
-- **`PUT /routing/v1/providers/`** — a peer announces that it provides one or more CIDs (`routes/providers.ts`). The server verifies each record's signature (see below), then validates and cleans the peer's announced multiaddrs against the request IP (`cleanAddrs` in `lib/utils.ts`, which fixes kubo's `0.0.0.0` self-reporting and drops mismatched ip4/ip6 addrs), then stores the providers keyed by CID (`lib/database.ts`). CIDs are normalized to a single version/codec/encoding (`normalizeCid`) so the same content always maps to one key.
+- **`PUT /routing/v1/providers/`** — a peer announces that it provides one or more CIDs (`routes/providers.ts`). The server verifies each record's signature (see below), then cleans the peer's announced multiaddrs (`cleanAddrs` in `lib/utils.ts`, which fixes kubo's `0.0.0.0` self-reporting and drops addrs nobody can dial, see [address filtering](#address-filtering)), then stores the providers keyed by CID (`lib/database.ts`). CIDs are normalized to a single version/codec/encoding (`normalizeCid`) so the same content always maps to one key.
 - **`GET /routing/v1/providers/:cid`** — returns up to 100 providers for a CID, randomized like a BitTorrent tracker response so peers spread their connections. Returns `404` with a short `max-age` when there are no providers, and sets `Cache-Control`/`Last-Modified` headers (with `stale-if-error` so cached results survive a 24h outage).
 
 Storage details (`lib/database.ts`):
@@ -31,7 +31,7 @@ There is no way to turn verification off. A router that accepts unsigned records
 
 Note that a valid signature only proves the record was made by the peer it names. It does not prove the peer actually has the content: any peer can still announce any CID under its own ID.
 
-Verification happens before `cleanAddrs`, so the addrs that end up stored can differ from the signed ones (kubo's `0.0.0.0` is rewritten to the request IP, mismatched addrs are dropped). That is fine here because the signed record is never re-served: `GET /routing/v1/providers/:cid` answers with unsigned `peer` schema records.
+Verification happens before `cleanAddrs`, so the addrs that end up stored can differ from the signed ones (kubo's `0.0.0.0` is rewritten to the request IP, filtered addrs are dropped). That is fine here because the signed record is never re-served: `GET /routing/v1/providers/:cid` answers with unsigned `peer` schema records.
 
 Other endpoints:
 - **`GET /`** — health/welcome message (`routes/index.ts`).
@@ -49,7 +49,12 @@ Environment variables:
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP port the server listens on (`bin/www.ts`). |
 | `DEBUG` | _unset_ | Debug namespace filter. Set to `pkc-http-router:*` to enable debug logs and morgan HTTP request logging (stdout). Sub-namespaces: `pkc-http-router:server`, `pkc-http-router:routes:providers`. |
-| `NO_IP_VALIDATE` | _unset_ | When set, skips multiaddr/IP validation in `cleanAddrs` (`lib/utils.ts`). Intended for testing only. |
+| `DROP_UNROUTABLE_ADDRS` | `true` | Drops announced addrs whose IP nobody on the public internet can dial. See [address filtering](#address-filtering). Set to `false` only for local testing. |
+| `STRICT_IP_MATCH` | `false` | Drops announced addrs whose IP differs from the IP the announcement came from, and rejects a request that contains an invalid multiaddr. See [address filtering](#address-filtering). |
+
+Boolean variables accept `true`/`false`, `1`/`0`, `yes`/`no` and `on`/`off`. Unset or empty means the default; any other value stops the server at startup.
+
+`NO_IP_VALIDATE` was removed. It was a testing switch that turned off all address filtering, and the server now ignores it with a warning. Its old production effect, keeping public addrs that don't match the request IP, is now the default.
 
 CLI flags (passed after `npm start --`, e.g. `npm start -- --log-key mylog`):
 
@@ -58,6 +63,22 @@ CLI flags (passed after `npm start --`, e.g. `npm start -- --log-key mylog`):
 | `--log-key <name>` | Enables per-request provider logging to the file `log/<name>`, and serves the `log/` folder at `GET /log`. Off when omitted. |
 
 The `scripts/start-ipfs.ts` helper (for running a local kubo node pointed at this router) also reads `HTTP_ROUTER_URLS`; that is not used by the server itself.
+
+#### address filtering
+
+Clients dial every addr a router returns, so an addr nobody can reach costs every client a lookup and a failed dial. Before storing a record, `cleanAddrs` (`lib/utils.ts`) applies these steps in order:
+
+1. **Kubo's unspecified address is rewritten.** Kubo announces `0.0.0.0` (or `::`) when it doesn't know its public IP; the router substitutes the IP the request came from. An unspecified addr of the other IP family than the request is dropped.
+2. **`DROP_UNROUTABLE_ADDRS` (default `true`)** drops addrs whose IP is in a range that isn't reachable from the public internet:
+   - IPv4: private (`10/8`, `172.16/12`, `192.168/16`), loopback, link-local, carrier-grade NAT (`100.64/10`, which is also where Tailscale addrs live), multicast, broadcast, `0/8`, and the documentation/benchmarking/reserved blocks.
+   - IPv6: loopback, unique-local (`fc00::/7`), link-local, site-local (`fec0::/10`, what QEMU user networking gives a guest), multicast, and the documentation, discard, benchmarking, ORCHID and other identifier-only blocks.
+   - The relay IP of a `p2p-circuit` addr is checked too.
+   - Kept: NAT64, 6to4 and Teredo addrs, and the anycast AS112/AMT blocks, since those are reachable.
+
+   Peers on the same LAN find each other with mDNS, so a router has no reason to hand out LAN addrs. A peer behind NAT that wants to be reachable should announce a public address instead, for example a relay (`p2p-circuit`) or a tunnel hostname such as a Tailscale Funnel `/dns4/<machine>.<tailnet>.ts.net/tcp/443/tls/ws` addr.
+3. **`STRICT_IP_MATCH` (default `false`)** drops every non-circuit addr whose IP isn't the request IP, and rejects the whole request with `400` if any addr isn't a valid multiaddr. It's off by default because it also drops real addrs: a dual-stack peer announcing over IPv4 loses its IPv6 addrs (and the other way round), IPv6 temporary addresses don't match the stable addrs a node announces, and a node that sends its announcements through a proxy or VPN loses all of its addrs. With announcement signatures verified, a mismatched public addr can at worst make clients dial an IP that doesn't answer for that peer ID; it can't hijack a peer.
+
+Addrs without an IP (`/dns4`, `/dns6`, `/dnsaddr`) are kept in all modes. A record left with no addrs after filtering isn't stored.
 
 #### logging
 

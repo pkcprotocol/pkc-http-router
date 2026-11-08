@@ -53,8 +53,6 @@ jobs:
           PKC_HTTP_ROUTER_IMAGE: pkc-http-router:test
           HTTP_PORT: 8099
           HTTP_BIND_IP: 127.0.0.1
-          # so the announced multiaddr below is not cleaned against the request ip
-          NO_IP_VALIDATE: 1
         run: docker compose up -d
 
       - name: Wait for the container to report healthy

@@ -8,12 +8,20 @@ import logger from 'morgan'
 import cors from 'cors'
 import Debug from 'debug'
 import type {RawBodyRequest} from './lib/types.js'
+import {getAddrFilterOptions} from './lib/utils.js'
 import indexRouter from './routes/index.js'
 import providersRouter from './routes/providers.js'
 import prometheusRouter from './routes/prometheus.js'
 
 const debug = Debug('pkc-http-router:server')
 const logKey = process.argv.includes('--log-key') && process.argv[process.argv.indexOf('--log-key') + 1]
+
+// fail at startup on an invalid DROP_UNROUTABLE_ADDRS or STRICT_IP_MATCH, not on every announce
+const addrFilterOptions = getAddrFilterOptions()
+debug('addr filter options', addrFilterOptions)
+if (process.env.NO_IP_VALIDATE) {
+  console.warn('NO_IP_VALIDATE is no longer used and is ignored. unroutable addrs are dropped (DROP_UNROUTABLE_ADDRS, default true) and the request-ip check is off unless STRICT_IP_MATCH is set, see README.md')
+}
 
 const app = express()
 
