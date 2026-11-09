@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.0.12](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.11...v0.0.12) (2026-11-09)
+
+### Bug Fixes
+
+* **ci:** release only after a push to master, not a fork PR's CI run ([#10](https://github.com/pkcprotocol/pkc-http-router/issues/10)) ([b35b9cb](https://github.com/pkcprotocol/pkc-http-router/commit/b35b9cb0ba28954a75be7f57aa4f4db9dad0fbf5))
+
 ## [0.0.11](https://github.com/pkcprotocol/pkc-http-router/compare/v0.0.10...v0.0.11) (2026-11-08)
 
 ### Bug Fixes
