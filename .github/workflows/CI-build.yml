@@ -15,7 +15,14 @@ jobs:
       contents: write
       # to dispatch the docker publish workflow below
       actions: write
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master' }}
+    # head_branch alone is not enough: a pull_request CI run from a fork's master branch also reports
+    # head_branch == 'master', and that run would release this repository's master. Release only
+    # after a push to this repository's master.
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push'
+        && github.event.workflow_run.head_branch == 'master'
+        && github.event.workflow_run.head_repository.full_name == github.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
