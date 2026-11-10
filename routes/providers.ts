@@ -50,7 +50,20 @@ router.put('/', async (req: Request, res: Response) => {
   // keeps the ones it already stored, the whole request is rejected and nothing is stored
   const rawPayloads = extractRawPayloads((req as RawBodyRequest).rawBody ?? Buffer.alloc(0))
   for (const [index, provider] of body.Providers.entries()) {
-    const {valid, reason, error} = verifyProvider(provider, rawPayloads[index])
+    // the payload that is verified and stored must be parsed from the exact bytes the
+    // signature covers, not taken from the parsed body: the scanner and body-parser can
+    // disagree about which Payload a body holds (an escaped duplicate key, a utf-* charset
+    // other than utf-8), and the body's Payload would then be stored under a signature that
+    // only covers another one
+    let rawPayload = rawPayloads[index]
+    if (rawPayload) {
+      try {
+        provider.Payload = JSON.parse(rawPayload.toString('utf8'))
+      } catch {
+        rawPayload = undefined
+      }
+    }
+    const {valid, reason, error} = verifyProvider(provider, rawPayload)
     if (!valid) {
       prometheus.postProvidersRejected(reason ?? 'unknown')
       debug('rejected provider', provider.Payload?.ID, reason, error)

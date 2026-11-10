@@ -141,6 +141,71 @@ describe('routes providers signature verification', () => {
     expect(providers.length).toBe(0)
   })
 
+  // the scanner that locates the signed Payload bytes compares raw key text while JSON.parse
+  // unescapes keys, so an escaped second key made them pick different payloads: the
+  // signature was checked over a captured record of the victim, of any age, while the
+  // Timestamp, Addrs and Keys that got stored came from a payload nobody signed
+  describe('stores the payload the signature covers', () => {
+    const capturedPayload = (timestamp: number): string => JSON.stringify(payloadFor(victim.peerId, victimIp, timestamp))
+    const forgedPayload = JSON.stringify(payloadFor(victim.peerId, attackerIp))
+    const providerJsonWith = (signedPayload: string, members: string): string =>
+      `{"Schema":"bitswap","Protocol":"transport-bitswap","Signature":${JSON.stringify(signPayload(victim, signedPayload))},"Payload":${signedPayload},${members}}`
+    const staleTimestamp = (): number => Date.now() - 1000 * 60 * 60 * 25
+
+    it('rejects a stale signed payload followed by an escaped Payload key', async () => {
+      const signedPayload = capturedPayload(staleTimestamp())
+      const res = await request('PUT', '/routing/v1/providers/', {
+        headers: headersFor(attackerIp),
+        body: providersBodyJson([providerJsonWith(signedPayload, `"\\u0050ayload":${forgedPayload}`)])
+      })
+      expect(res.status).toBe(403)
+      const {providers} = await database.getProviders(cid)
+      expect(providers.length).toBe(0)
+    })
+
+    it('stores the signed addrs, not the ones under an escaped Payload key', async () => {
+      const signedPayload = capturedPayload(Date.now() - 1000 * 60)
+      const res = await request('PUT', '/routing/v1/providers/', {
+        headers: headersFor(attackerIp),
+        body: providersBodyJson([providerJsonWith(signedPayload, `"\\u0050ayload":${forgedPayload}`)])
+      })
+      expect(res.status).toBe(200)
+      const {providers} = await database.getProviders(cid)
+      expect(providers.length).toBe(1)
+      expect(providers[0].Addrs).toEqual([`/ip4/${victimIp}/tcp/4001`, `/ip4/${victimIp}/udp/4001/quic-v1`])
+    })
+
+    it('rejects a stale signed record followed by an escaped Providers key', async () => {
+      const signedPayload = capturedPayload(staleTimestamp())
+      const signature = signPayload(victim, signedPayload)
+      const signedProvider = `{"Schema":"bitswap","Protocol":"transport-bitswap","Signature":${JSON.stringify(signature)},"Payload":${signedPayload}}`
+      const forgedProvider = `{"Schema":"bitswap","Protocol":"transport-bitswap","Signature":${JSON.stringify(signature)},"Payload":${forgedPayload}}`
+      const res = await request('PUT', '/routing/v1/providers/', {
+        headers: headersFor(attackerIp),
+        body: `{"Providers":[${signedProvider}],"\\u0050roviders":[${forgedProvider}]}`
+      })
+      expect(res.status).toBe(403)
+      const {providers} = await database.getProviders(cid)
+      expect(providers.length).toBe(0)
+    })
+
+    // body-parser decodes any utf-* charset before JSON.parse, while the signature covers
+    // the bytes as sent, so the parsed body can differ from the signed bytes without a
+    // single backslash: in utf-7, '+AFA-' decodes to 'P' and '+-' to '+'
+    it('rejects a stale signed payload whose duplicate key only matches after charset decoding', async () => {
+      const signedPayload = capturedPayload(staleTimestamp())
+      const providerJson = providerJsonWith(signedPayload, `"+AFA-ayload":${forgedPayload}`)
+        .replace(/"Signature":"[^"]*"/, (signatureMember) => signatureMember.replaceAll('+', '+-'))
+      const res = await request('PUT', '/routing/v1/providers/', {
+        headers: {...headersFor(attackerIp), 'content-type': 'application/json; charset=utf-7'},
+        body: providersBodyJson([providerJson])
+      })
+      expect(res.status).toBe(403)
+      const {providers} = await database.getProviders(cid)
+      expect(providers.length).toBe(0)
+    })
+  })
+
   it('rejects the whole request when one record of several fails', async () => {
     const good = signedProviderJson(victim, payloadFor(victim.peerId, victimIp))
     const bad = signedProviderJson(attacker, payloadFor(attacker.peerId, victimIp), {signature: null})

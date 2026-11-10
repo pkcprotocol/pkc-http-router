@@ -115,9 +115,10 @@ const objectMember = (raw: string, start: number, name: string): Range | undefin
     }
     const valueStart = skipWhitespace(raw, index + 1)
     const valueEnd = skipValue(raw, valueStart)
-    // escapes in the key would need unescaping to compare, but the keys this looks for
-    // ('Providers', 'Payload') contain no escapable character, so an escaped key simply
-    // doesn't match, exactly like it doesn't match for JSON.parse
+    // escapes in the key are not decoded, so an escaped key (e.g. "Payload") never
+    // matches here even though JSON.parse decodes it and does match it. the scanner can
+    // then pick a different Payload than the parsed body, which is why routes/providers.ts
+    // verifies and stores the payload parsed from these bytes, never the body's
     if (key === name) {
       found = {start: valueStart, end: valueEnd}
     }
