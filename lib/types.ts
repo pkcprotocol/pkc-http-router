@@ -34,6 +34,9 @@ export interface PeerProvider {
 export interface StoredProvider {
   provider: PeerProvider
   lastModified: number
+  // the signed Payload.Timestamp (ms) of the record, the peer's record never goes back to
+  // an older one. absent or 0 for records stored before it was kept
+  timestamp?: number
 }
 
 // the value stored in the database for a single cid

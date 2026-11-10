@@ -1,4 +1,7 @@
 import {describe, it, expect, beforeAll, afterAll, beforeEach} from 'vitest'
+import crypto from 'node:crypto'
+import {CID} from 'multiformats/cid'
+import * as Digest from 'multiformats/hashes/digest'
 import database from '../../lib/database.js'
 import {request, closeServer} from '../helpers/request.js'
 import {createTestPeer, signPayload, signedBodyJson, signedProviderJson, providersBodyJson} from '../helpers/sign.js'
@@ -12,6 +15,8 @@ import {createTestPeer, signPayload, signedBodyJson, signedProviderJson, provide
 // and reject the request with 403 when it doesn't verify.
 
 const cid = 'bafkreigur6gzxm3ykiol7ywou3iy3obruzs2q7boizj7oznznid34dzc3e'
+const rawCodec = 0x55
+const sha256Code = 0x12
 const victimIp = '123.123.123.123'
 const attackerIp = '111.111.111.111'
 
@@ -257,6 +262,46 @@ describe('routes providers signature verification', () => {
         body: signedBodyJson(victim, payloadFor(victim.peerId, victimIp, recentTimestamp))
       })
       expect(res.status).toBe(200)
+    })
+
+    // the 24h window alone let anyone holding a peer's earlier record replay it after a
+    // newer one, which put the peer's older addrs back on every cid it announces and
+    // restarted their ttl. the peer's addrs must only move forward in signed time
+    it('keeps the newer addrs when an older record of the peer is replayed', async () => {
+      const newIp = '124.124.124.124'
+      const olderBody = signedBodyJson(victim, payloadFor(victim.peerId, victimIp, Date.now() - 1000 * 60 * 10))
+      const newerBody = signedBodyJson(victim, payloadFor(victim.peerId, newIp, Date.now() - 1000 * 60 * 5))
+      expect((await request('PUT', '/routing/v1/providers/', {headers: headersFor(victimIp), body: olderBody})).status).toBe(200)
+      expect((await request('PUT', '/routing/v1/providers/', {headers: headersFor(newIp), body: newerBody})).status).toBe(200)
+
+      // still inside the window and signed by the peer, so it is accepted, but it must not
+      // put the older addrs back on
+      const res = await request('PUT', '/routing/v1/providers/', {headers: headersFor(victimIp), body: olderBody})
+      expect(res.status).toBe(200)
+      const {providers} = await database.getProviders(cid)
+      expect(providers.length).toBe(1)
+      expect(providers[0].Addrs).toEqual([`/ip4/${newIp}/tcp/4001`, `/ip4/${newIp}/udp/4001/quic-v1`])
+    })
+
+    // kubo (boxo ProvideMany) splits a large provide into batches of keys and sends them
+    // concurrently, each signed with its own time, so a batch can arrive after one signed
+    // later. every batch is a valid announcement and all of its keys must be stored
+    it('stores every record of a peer when later-signed ones arrive first', async () => {
+      const now = Date.now()
+      const keys = [0, 1, 2, 3, 4].map(i => CID.create(1, rawCodec, Digest.create(sha256Code, crypto.createHash('sha256').update(`batch${i}`).digest())).toString())
+      const statuses: number[] = []
+      // newest first: each record is signed 1ms before the one sent ahead of it
+      for (const [i, key] of keys.entries()) {
+        const payload = {...payloadFor(victim.peerId, victimIp, now - i), Keys: [key]}
+        const res = await request('PUT', '/routing/v1/providers/', {headers: headersFor(victimIp), body: signedBodyJson(victim, payload)})
+        statuses.push(res.status)
+      }
+      expect(statuses).toEqual([200, 200, 200, 200, 200])
+      for (const key of keys) {
+        const {providers} = await database.getProviders(key)
+        expect(providers.length).toBe(1)
+        expect(providers[0].ID).toBe(victim.peerId)
+      }
     })
 
     it('rejects a record without a Timestamp', async () => {
