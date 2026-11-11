@@ -69,8 +69,10 @@ class ProvidersStore {
     // AUTOINCREMENT so a swept peer's number is never reused: a stale announcement row
     // surviving a crash mid-sweep must never resolve to a different, newer peer
     // timestamp is the signed Payload.Timestamp in ms of the stored record, lastModified the
-    // arrival time in seconds of the peer's newest announcement
-    this.#db.exec('CREATE TABLE IF NOT EXISTS peers (peerNumber INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, provider TEXT NOT NULL, lastModified INTEGER NOT NULL, timestamp INTEGER NOT NULL DEFAULT 0) STRICT')
+    // arrival time in seconds of the peer's newest announcement. timestamp is REAL because
+    // Payload.Timestamp is any json number: rounding it would make two records signed
+    // inside the same ms equal, and the older one could then replace the newer one
+    this.#db.exec('CREATE TABLE IF NOT EXISTS peers (peerNumber INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, provider TEXT NOT NULL, lastModified INTEGER NOT NULL, timestamp REAL NOT NULL DEFAULT 0) STRICT')
     // WITHOUT ROWID: the primary key is the row, so each announcement is stored once in
     // the (cid, peerNumber) btree instead of a rowid table plus a separate primary key index
     this.#db.exec('CREATE TABLE IF NOT EXISTS cidProviders (cid BLOB NOT NULL, peerNumber INTEGER NOT NULL, lastModified INTEGER NOT NULL, PRIMARY KEY (cid, peerNumber)) STRICT, WITHOUT ROWID')
@@ -172,7 +174,7 @@ class ProvidersStore {
   #addPeerTimestampColumn(): void {
     const timestampColumn = this.#db.prepare("SELECT name FROM pragma_table_info('peers') WHERE name = 'timestamp'").get()
     if (!timestampColumn) {
-      this.#db.exec('ALTER TABLE peers ADD COLUMN timestamp INTEGER NOT NULL DEFAULT 0')
+      this.#db.exec('ALTER TABLE peers ADD COLUMN timestamp REAL NOT NULL DEFAULT 0')
     }
   }
 
@@ -255,8 +257,7 @@ class ProvidersStore {
       for (const peerId in value.providers) {
         const {provider, lastModified, timestamp} = value.providers[peerId]
         const seconds = msToSeconds(lastModified)
-        // floored because the column is an integer and Payload.Timestamp is any json number
-        this.#upsertPeerStatement.run(peerId, JSON.stringify(provider), seconds, Math.floor(timestamp ?? 0))
+        this.#upsertPeerStatement.run(peerId, JSON.stringify(provider), seconds, timestamp ?? 0)
         const {peerNumber} = this.#getPeerNumberStatement.get(peerId) as {peerNumber: number}
         this.#insertCidProviderStatement.run(cid, peerNumber, seconds)
       }

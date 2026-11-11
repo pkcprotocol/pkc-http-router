@@ -145,11 +145,12 @@ describe('compact schema', () => {
     expect(migrated.provider.Addrs).toEqual(['/ip4/5.6.7.8/tcp/4001'])
     expect(migrated.timestamp).toBe(0)
     const value = entry('peer1', ['/ip4/1.2.3.4/tcp/4001'], 300_000)
-    value.providers['peer1'].timestamp = 1_000
+    // fractional, because Payload.Timestamp is any json number and is stored as is
+    value.providers['peer1'].timestamp = 1_000.5
     store.set(cids[0], value)
     const updated = store.get(cids[0])!.providers['peer1']
     expect(updated.provider.Addrs).toEqual(['/ip4/1.2.3.4/tcp/4001'])
-    expect(updated.timestamp).toBe(1_000)
+    expect(updated.timestamp).toBe(1_000.5)
   })
 
   it('sweep deletes expired announcements and their peers', async () => {

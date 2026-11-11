@@ -297,6 +297,20 @@ describe('routes providers signature verification', () => {
       expect(providers[0].Addrs).toEqual([`/ip4/${newIp}/tcp/4001`, `/ip4/${newIp}/udp/4001/quic-v1`])
     })
 
+    // Payload.Timestamp is any json number, so two records of a peer can be signed less than
+    // 1ms apart. the comparison must still see which one is newer
+    it('keeps the newer addrs when an older record signed in the same ms is replayed', async () => {
+      const newIp = '124.124.124.124'
+      const ms = Math.floor(Date.now() - 1000 * 60)
+      const olderBody = signedBodyJson(victim, payloadFor(victim.peerId, victimIp, ms + 0.1))
+      const newerBody = signedBodyJson(victim, payloadFor(victim.peerId, newIp, ms + 0.9))
+      expect((await request('PUT', '/routing/v1/providers/', {headers: headersFor(newIp), body: newerBody})).status).toBe(200)
+      expect((await request('PUT', '/routing/v1/providers/', {headers: headersFor(victimIp), body: olderBody})).status).toBe(200)
+      const {providers} = await database.getProviders(cid)
+      expect(providers.length).toBe(1)
+      expect(providers[0].Addrs).toEqual([`/ip4/${newIp}/tcp/4001`, `/ip4/${newIp}/udp/4001/quic-v1`])
+    })
+
     // kubo (boxo ProvideMany) splits a large provide into batches of keys and sends them
     // concurrently, each signed with its own time, so a batch can arrive after one signed
     // later. every batch is a valid announcement and all of its keys must be stored
