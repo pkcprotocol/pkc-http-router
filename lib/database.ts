@@ -369,6 +369,14 @@ const addCidProvidersToDatabase = async (cid: string, newProviders: Provider[]):
     }
 
     for (const newProvider of newProviders) {
+      // a request can hold several records of one peer for this cid, and only the one kept
+      // here reaches the store's signed-time guard: a record signed before the kept one
+      // still announces the cid but keeps the newer record, like the guard does
+      const previous = nextProviders[newProvider.Payload.ID]
+      if (previous && (previous.timestamp ?? 0) > (newProvider.Payload.Timestamp ?? 0)) {
+        previous.lastModified = Date.now()
+        continue
+      }
       nextProviders[newProvider.Payload.ID] = {
         provider: {
           Schema: 'peer',
