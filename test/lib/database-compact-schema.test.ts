@@ -14,6 +14,9 @@ const DateNow = Date.now
 
 const {ProvidersStore} = database._private
 
+// the store's ttl (lib/database.ts)
+const ttl = 1000 * 60 * 60 * 24
+
 // production database.sqlite was 332mb for ~1m announcements because every cidProviders
 // row stored the cid as a 59-char base32 string, the peerId as a 52-char base58 string
 // (despite only ~44 distinct peers) and a millisecond timestamp — and the lastModified
@@ -95,6 +98,59 @@ describe('compact schema', () => {
 
     expect(store.get(cids[0])!.providers['peer1'].provider.Addrs).toEqual(['/ip4/5.6.7.8/tcp/4001'])
     expect(store.get(cids[1])!.providers['peer1'].provider.Addrs).toEqual(['/ip4/5.6.7.8/tcp/4001'])
+  })
+
+  // arrival order is not signed order: kubo sends the batches of one provide concurrently,
+  // each signed with its own time, and anyone holding a peer's earlier record can replay it
+  // inside the 24h window. a record signed before the stored one still adds its
+  // announcement, but must not put its older addrs back on the shared peer record
+  it('an older signed record arriving later adds its announcement without regressing the peer record', async () => {
+    const store = new ProvidersStore(tmpDbFile())
+    const signed = (addrs: string[], lastModified: number, timestamp: number): CidProviders => {
+      const value = entry('peer1', addrs, lastModified)
+      value.providers['peer1'].timestamp = timestamp
+      return value
+    }
+    store.set(cids[0], signed(['/ip4/5.6.7.8/tcp/4001'], 100_000, 2_000))
+    store.set(cids[1], signed(['/ip4/1.2.3.4/tcp/4001'], 200_000, 1_000))
+
+    expect(store.get(cids[0])!.providers['peer1'].provider.Addrs).toEqual(['/ip4/5.6.7.8/tcp/4001'])
+    const later = store.get(cids[1])!.providers['peer1']
+    expect(later.provider.Addrs).toEqual(['/ip4/5.6.7.8/tcp/4001'])
+    expect(later.timestamp).toBe(2_000)
+    // the announcement keeps its own arrival time
+    expect(later.lastModified).toBe(200_000)
+
+    // the peer row lives as long as its newest announcement: once the first one expires,
+    // the one that arrived later must still resolve to the peer
+    Date.now = () => 150_000 + ttl
+    await store.sweep()
+    expect(store.get(cids[0])).toBe(undefined)
+    expect(store.get(cids[1])?.providers['peer1'].provider.Addrs).toEqual(['/ip4/5.6.7.8/tcp/4001'])
+  })
+
+  // stores created before the signed timestamp was kept get the column on startup, and
+  // their peers start at 0 so the next record of each replaces their addrs
+  it('adds the signed timestamp column to an existing compact store', () => {
+    const file = tmpDbFile()
+    const db = new DatabaseSync(file)
+    db.exec('CREATE TABLE peers (peerNumber INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, provider TEXT NOT NULL, lastModified INTEGER NOT NULL) STRICT')
+    db.exec('CREATE TABLE cidProviders (cid BLOB NOT NULL, peerNumber INTEGER NOT NULL, lastModified INTEGER NOT NULL, PRIMARY KEY (cid, peerNumber)) STRICT, WITHOUT ROWID')
+    db.prepare('INSERT INTO peers (id, provider, lastModified) VALUES (?, ?, ?)').run('peer1', providerJson('peer1', ['/ip4/5.6.7.8/tcp/4001']), 200)
+    db.prepare('INSERT INTO cidProviders (cid, peerNumber, lastModified) VALUES (?, ?, ?)').run(CID.parse(cids[0]).bytes, 1, 200)
+    db.close()
+
+    const store = new ProvidersStore(file)
+    const migrated = store.get(cids[0])!.providers['peer1']
+    expect(migrated.provider.Addrs).toEqual(['/ip4/5.6.7.8/tcp/4001'])
+    expect(migrated.timestamp).toBe(0)
+    const value = entry('peer1', ['/ip4/1.2.3.4/tcp/4001'], 300_000)
+    // fractional, because Payload.Timestamp is any json number and is stored as is
+    value.providers['peer1'].timestamp = 1_000.5
+    store.set(cids[0], value)
+    const updated = store.get(cids[0])!.providers['peer1']
+    expect(updated.provider.Addrs).toEqual(['/ip4/1.2.3.4/tcp/4001'])
+    expect(updated.timestamp).toBe(1_000.5)
   })
 
   it('sweep deletes expired announcements and their peers', async () => {

@@ -1,5 +1,4 @@
 import {spawn, spawnSync, type SpawnOptions} from 'node:child_process'
-import ps from 'node:process'
 import dotenv from 'dotenv'
 import path from 'node:path'
 import {fileURLToPath} from 'node:url'
@@ -103,18 +102,12 @@ const startIpfs = async (): Promise<void> => {
       console.error(`ipfs process with pid ${ipfsProcess.pid} exited`)
       reject(Error(lastError))
     })
+    // only ever signal the daemon this helper started. ipfsProcess.kill() does nothing once
+    // the daemon has exited, so a reused pid can't be hit; pid + 1 is not a child of the
+    // daemon (it is spawned directly, without a shell) but whatever process the os started
+    // next, so it must not be signaled
     process.on('exit', () => {
-      try {
-        if (ipfsProcess.pid) ps.kill(ipfsProcess.pid)
-      } catch (e) {
-        console.log(e)
-      }
-      try {
-        // sometimes ipfs doesnt exit unless we kill pid +1
-        if (ipfsProcess.pid) ps.kill(ipfsProcess.pid + 1)
-      } catch (e) {
-        console.log(e)
-      }
+      ipfsProcess.kill()
     })
 
     ipfsProcess.stdout?.on('data', (data) => {

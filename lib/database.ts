@@ -68,20 +68,32 @@ class ProvidersStore {
     this.#migrateDenormalizedTables()
     // AUTOINCREMENT so a swept peer's number is never reused: a stale announcement row
     // surviving a crash mid-sweep must never resolve to a different, newer peer
-    this.#db.exec('CREATE TABLE IF NOT EXISTS peers (peerNumber INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, provider TEXT NOT NULL, lastModified INTEGER NOT NULL) STRICT')
+    // timestamp is the signed Payload.Timestamp in ms of the stored record, lastModified the
+    // arrival time in seconds of the peer's newest announcement. timestamp is REAL because
+    // Payload.Timestamp is any json number: rounding it would make two records signed
+    // inside the same ms equal, and the older one could then replace the newer one
+    this.#db.exec('CREATE TABLE IF NOT EXISTS peers (peerNumber INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, provider TEXT NOT NULL, lastModified INTEGER NOT NULL, timestamp REAL NOT NULL DEFAULT 0) STRICT')
     // WITHOUT ROWID: the primary key is the row, so each announcement is stored once in
     // the (cid, peerNumber) btree instead of a rowid table plus a separate primary key index
     this.#db.exec('CREATE TABLE IF NOT EXISTS cidProviders (cid BLOB NOT NULL, peerNumber INTEGER NOT NULL, lastModified INTEGER NOT NULL, PRIMARY KEY (cid, peerNumber)) STRICT, WITHOUT ROWID')
+    this.#addPeerTimestampColumn()
     this.#migrateLegacyProvidersTable()
     // lastModified indexes make the sweeps indexed range deletes instead of full scans
     this.#db.exec('CREATE INDEX IF NOT EXISTS cidProviders_lastModified ON cidProviders (lastModified)')
     this.#db.exec('CREATE INDEX IF NOT EXISTS peers_lastModified ON peers (lastModified)')
-    this.#getStatement = this.#db.prepare('SELECT peers.id AS peerId, cidProviders.lastModified AS lastModified, peers.provider AS provider FROM cidProviders JOIN peers ON peers.peerNumber = cidProviders.peerNumber WHERE cidProviders.cid = ?')
+    this.#getStatement = this.#db.prepare('SELECT peers.id AS peerId, cidProviders.lastModified AS lastModified, peers.provider AS provider, peers.timestamp AS timestamp FROM cidProviders JOIN peers ON peers.peerNumber = cidProviders.peerNumber WHERE cidProviders.cid = ?')
     this.#deleteCidStatement = this.#db.prepare('DELETE FROM cidProviders WHERE cid = ?')
     this.#insertCidProviderStatement = this.#db.prepare('INSERT INTO cidProviders (cid, peerNumber, lastModified) VALUES (?, ?, ?) ON CONFLICT(cid, peerNumber) DO UPDATE SET lastModified = excluded.lastModified')
-    // the guard keeps the newest record per peer: an entry round-tripped through get()
-    // by another cid's write must not regress the peer's shared addrs with older ones
-    this.#upsertPeerStatement = this.#db.prepare('INSERT INTO peers (id, provider, lastModified) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET provider = excluded.provider, lastModified = excluded.lastModified WHERE excluded.lastModified >= peers.lastModified')
+    // a peer's shared record (addrs, signed timestamp) only moves forward in signed time.
+    // a record signed before the stored one can arrive later (kubo sends the batches of one
+    // provide concurrently, each signed with its own time, and anyone holding a peer's
+    // earlier record can replay it inside the 24h window): it still adds its announcements,
+    // but never puts its older addrs back on. on equal signed time (0 for every record
+    // stored before the timestamp was kept) the latest arrival wins, so an entry
+    // round-tripped through get() by another cid's write can't regress the addrs either.
+    // lastModified is the peer's newest announcement, so the sweep never deletes a peer
+    // that still has a live one
+    this.#upsertPeerStatement = this.#db.prepare('INSERT INTO peers (id, provider, lastModified, timestamp) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET provider = CASE WHEN excluded.timestamp > peers.timestamp OR (excluded.timestamp = peers.timestamp AND excluded.lastModified >= peers.lastModified) THEN excluded.provider ELSE peers.provider END, timestamp = max(peers.timestamp, excluded.timestamp), lastModified = max(peers.lastModified, excluded.lastModified)')
     this.#getPeerNumberStatement = this.#db.prepare('SELECT peerNumber FROM peers WHERE id = ?')
     this.#clearCidProvidersStatement = this.#db.prepare('DELETE FROM cidProviders')
     this.#clearPeersStatement = this.#db.prepare('DELETE FROM peers')
@@ -156,6 +168,16 @@ class ProvidersStore {
     this.#reclaimSpace()
   }
 
+  // stores created before the signed Payload.Timestamp was kept get the column on startup.
+  // existing peers start at 0, so the next record of each replaces their addrs. a column
+  // with a constant default only changes the schema, the rows are not rewritten
+  #addPeerTimestampColumn(): void {
+    const timestampColumn = this.#db.prepare("SELECT name FROM pragma_table_info('peers') WHERE name = 'timestamp'").get()
+    if (!timestampColumn) {
+      this.#db.exec('ALTER TABLE peers ADD COLUMN timestamp REAL NOT NULL DEFAULT 0')
+    }
+  }
+
   // one-time migration of the pre-normalization schema (one row per cid with every
   // provider record copied into a json blob) into the compact tables, so old production
   // stores upgrade in place on startup. also handles the oldest schema that had no
@@ -210,7 +232,7 @@ class ProvidersStore {
   }
 
   get(key: string): CidProviders | undefined {
-    const rows = this.#getStatement.all(cidToBytes(key)) as {peerId: string; lastModified: number; provider: string}[]
+    const rows = this.#getStatement.all(cidToBytes(key)) as {peerId: string; lastModified: number; provider: string; timestamp: number}[]
     if (!rows.length) {
       return undefined
     }
@@ -218,7 +240,7 @@ class ProvidersStore {
     let lastModified = 0
     for (const row of rows) {
       const lastModifiedMs = secondsToMs(row.lastModified)
-      providers[row.peerId] = {provider: JSON.parse(row.provider) as PeerProvider, lastModified: lastModifiedMs}
+      providers[row.peerId] = {provider: JSON.parse(row.provider) as PeerProvider, lastModified: lastModifiedMs, timestamp: row.timestamp}
       if (lastModifiedMs > lastModified) {
         lastModified = lastModifiedMs
       }
@@ -233,9 +255,9 @@ class ProvidersStore {
     try {
       this.#deleteCidStatement.run(cid)
       for (const peerId in value.providers) {
-        const {provider, lastModified} = value.providers[peerId]
+        const {provider, lastModified, timestamp} = value.providers[peerId]
         const seconds = msToSeconds(lastModified)
-        this.#upsertPeerStatement.run(peerId, JSON.stringify(provider), seconds)
+        this.#upsertPeerStatement.run(peerId, JSON.stringify(provider), seconds, timestamp ?? 0)
         const {peerNumber} = this.#getPeerNumberStatement.get(peerId) as {peerNumber: number}
         this.#insertCidProviderStatement.run(cid, peerNumber, seconds)
       }
@@ -348,6 +370,14 @@ const addCidProvidersToDatabase = async (cid: string, newProviders: Provider[]):
     }
 
     for (const newProvider of newProviders) {
+      // a request can hold several records of one peer for this cid, and only the one kept
+      // here reaches the store's signed-time guard: a record signed before the kept one
+      // still announces the cid but keeps the newer record, like the guard does
+      const previous = nextProviders[newProvider.Payload.ID]
+      if (previous && (previous.timestamp ?? 0) > (newProvider.Payload.Timestamp ?? 0)) {
+        previous.lastModified = Date.now()
+        continue
+      }
       nextProviders[newProvider.Payload.ID] = {
         provider: {
           Schema: 'peer',
@@ -355,7 +385,8 @@ const addCidProvidersToDatabase = async (cid: string, newProviders: Provider[]):
           ID: newProvider.Payload.ID,
           Protocols: [newProvider.Protocol]
         },
-        lastModified: Date.now()
+        lastModified: Date.now(),
+        timestamp: newProvider.Payload.Timestamp
       }
     }
     const nextValue: CidProviders = {
